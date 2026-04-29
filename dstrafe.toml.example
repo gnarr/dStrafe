@@ -1,0 +1,5 @@
+[movement]
+forward = "W"
+backward = "S"
+left = "A"
+right = "D"

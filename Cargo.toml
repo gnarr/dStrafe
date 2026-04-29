@@ -1,0 +1,18 @@
+[package]
+name = "dstrafe"
+version = "0.1.0"
+edition = "2024"
+license = "MIT"
+
+[dependencies]
+egui = "0.34.1"
+egui-wgpu = { version = "0.34.1", features = ["winit"] }
+egui-winit = "0.34.1"
+env_logger = "0.11.10"
+log = "0.4.28"
+pollster = "0.4.0"
+rdev = "0.5.3"
+serde = { version = "1.0.228", features = ["derive"] }
+toml = "1.1.2"
+wgpu = "29.0.0"
+winit = "0.30.13"
