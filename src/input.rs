@@ -1,5 +1,5 @@
 use crate::app::UiCommand;
-use crate::classifier::{MovementClassifier, apply_counter_strafe_thresholds};
+use crate::classifier::MovementClassifier;
 use crate::config::MovementKeys;
 use rdev::{Button, Event, EventType, Key, listen};
 use std::thread;
@@ -66,8 +66,7 @@ impl InputListener {
                 }
             }
             EventType::ButtonPress(Button::Left) => {
-                let result =
-                    apply_counter_strafe_thresholds(self.classifier.classify_shot(timestamp_ms));
+                let result = self.classifier.classify_shot(timestamp_ms);
                 self.send(UiCommand::Shot(result));
             }
             _ => {}
