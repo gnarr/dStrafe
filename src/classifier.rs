@@ -6,6 +6,7 @@ struct AxisState {
     keys: [char; 2],
     held_keys: HashSet<char>,
     press_times: HashMap<char, f64>,
+    cs_candidate: Option<CounterStrafeCandidate>,
     cs_release_key: Option<char>,
     cs_release_time: Option<f64>,
     cs_press_key: Option<char>,
@@ -14,12 +15,21 @@ struct AxisState {
     micro_candidate_duration: Option<f64>,
 }
 
+#[derive(Clone, Copy, Debug)]
+struct CounterStrafeCandidate {
+    release_key: char,
+    release_time_ms: f64,
+    press_key: char,
+    press_time_ms: f64,
+}
+
 impl AxisState {
     fn new(keys: [char; 2]) -> Self {
         Self {
             keys,
             held_keys: HashSet::new(),
             press_times: HashMap::new(),
+            cs_candidate: None,
             cs_release_key: None,
             cs_release_time: None,
             cs_press_key: None,
@@ -30,6 +40,10 @@ impl AxisState {
     }
 
     fn on_press(&mut self, key: char, timestamp_ms: f64) {
+        if self.held_keys.contains(&key) {
+            return;
+        }
+
         let other = if key == self.keys[1] {
             self.keys[0]
         } else {
@@ -46,6 +60,16 @@ impl AxisState {
         if self.cs_release_key == Some(other) && self.cs_press_time.is_none() {
             self.cs_press_key = Some(key);
             self.cs_press_time = Some(timestamp_ms);
+            if let Some(release_time_ms) = self.cs_release_time
+                && timestamp_ms > release_time_ms
+            {
+                self.cs_candidate = Some(CounterStrafeCandidate {
+                    release_key: other,
+                    release_time_ms,
+                    press_key: key,
+                    press_time_ms: timestamp_ms,
+                });
+            }
             self.micro_candidate_duration = None;
         }
 
@@ -53,6 +77,10 @@ impl AxisState {
     }
 
     fn on_release(&mut self, key: char, timestamp_ms: f64) {
+        if !self.held_keys.contains(&key) {
+            return;
+        }
+
         if let Some(press_time) = self.press_times.get(&key) {
             let duration = timestamp_ms - press_time;
             if duration < 80.0 {
@@ -84,12 +112,14 @@ impl AxisState {
             }
         }
 
-        if let (Some(cs_release_time), Some(cs_press_time)) =
-            (self.cs_release_time, self.cs_press_time)
-            && cs_press_time > cs_release_time
+        if let Some(candidate) = self.cs_candidate
+            && candidate.press_time_ms > candidate.release_time_ms
+            && self.keys.contains(&candidate.release_key)
+            && self.keys.contains(&candidate.press_key)
+            && candidate.press_key != candidate.release_key
         {
-            let cs_time = cs_press_time - cs_release_time;
-            let shot_delay = shot_time_ms - cs_press_time;
+            let cs_time = candidate.press_time_ms - candidate.release_time_ms;
+            let shot_delay = shot_time_ms - candidate.press_time_ms;
             self.reset();
             return AxisClassification::CounterStrafe {
                 cs_time_ms: cs_time,
@@ -102,11 +132,18 @@ impl AxisState {
     }
 
     fn reset(&mut self) {
+        let overlap_start_time = if self.keys.iter().all(|key| self.held_keys.contains(key)) {
+            self.overlap_start_time
+        } else {
+            None
+        };
+
+        self.cs_candidate = None;
         self.cs_release_key = None;
         self.cs_release_time = None;
         self.cs_press_key = None;
         self.cs_press_time = None;
-        self.overlap_start_time = None;
+        self.overlap_start_time = overlap_start_time;
         self.micro_candidate_duration = None;
     }
 }
@@ -119,9 +156,13 @@ enum AxisClassification {
 }
 
 impl AxisClassification {
-    fn negativity(self) -> u8 {
+    fn selection_rank(self) -> u8 {
         match self {
-            AxisClassification::Overlap { .. } => 2,
+            AxisClassification::Overlap { .. } => 3,
+            AxisClassification::CounterStrafe {
+                cs_time_ms,
+                shot_delay_ms,
+            } if counter_strafe_passes_thresholds(cs_time_ms, shot_delay_ms) => 2,
             AxisClassification::CounterStrafe { .. } => 1,
             AxisClassification::Bad => 0,
         }
@@ -241,10 +282,10 @@ pub fn apply_counter_strafe_thresholds(base: ShotClassification) -> ShotClassifi
         },
         ShotLabel::CounterStrafe => {
             if let (Some(cs_time), Some(shot_delay)) = (base.cs_time_ms, base.shot_delay_ms) {
-                if shot_delay > 230.0 || (cs_time > 215.0 && shot_delay > 215.0) {
-                    ShotClassification::bad_with_timing(cs_time, shot_delay)
-                } else {
+                if counter_strafe_passes_thresholds(cs_time, shot_delay) {
                     ShotClassification::counter_strafe(cs_time, shot_delay)
+                } else {
+                    ShotClassification::bad_with_timing(cs_time, shot_delay)
                 }
             } else {
                 ShotClassification::bad()
@@ -252,6 +293,10 @@ pub fn apply_counter_strafe_thresholds(base: ShotClassification) -> ShotClassifi
         }
         ShotLabel::Bad => ShotClassification::bad(),
     }
+}
+
+fn counter_strafe_passes_thresholds(cs_time_ms: f64, shot_delay_ms: f64) -> bool {
+    shot_delay_ms <= 230.0 && (cs_time_ms <= 215.0 || shot_delay_ms <= 215.0)
 }
 
 #[derive(Clone, Debug)]
@@ -328,7 +373,7 @@ fn choose_axis_classification(
     vertical: AxisClassification,
     horizontal: AxisClassification,
 ) -> AxisClassification {
-    match vertical.negativity().cmp(&horizontal.negativity()) {
+    match vertical.selection_rank().cmp(&horizontal.selection_rank()) {
         std::cmp::Ordering::Greater => vertical,
         std::cmp::Ordering::Less => horizontal,
         std::cmp::Ordering::Equal => match (vertical.primary_time(), horizontal.primary_time()) {
@@ -403,6 +448,85 @@ mod tests {
 
         assert_eq!(result.label, ShotLabel::Overlap);
         assert_eq!(result.overlap_time_ms, Some(135.0));
+    }
+
+    #[test]
+    fn counter_strafe_survives_counter_key_release_before_shot() {
+        let mut classifier = MovementClassifier::default();
+
+        classifier.on_press('A', 0.0);
+        classifier.on_release('A', 100.0);
+        classifier.on_press('D', 132.0);
+        classifier.on_release('D', 170.0);
+
+        let result = apply_counter_strafe_thresholds(classifier.classify_shot(180.0));
+
+        assert_eq!(result.label, ShotLabel::CounterStrafe);
+        assert_eq!(result.cs_time_ms, Some(32.0));
+        assert_eq!(result.shot_delay_ms, Some(48.0));
+    }
+
+    #[test]
+    fn valid_axis_wins_when_other_counter_strafe_fails_thresholds() {
+        let mut classifier = MovementClassifier::default();
+
+        classifier.on_press('W', 0.0);
+        classifier.on_release('W', 100.0);
+        classifier.on_press('S', 300.0);
+        classifier.on_press('A', 350.0);
+        classifier.on_release('A', 400.0);
+        classifier.on_press('D', 430.0);
+
+        let result = apply_counter_strafe_thresholds(classifier.classify_shot(540.0));
+
+        assert_eq!(result.label, ShotLabel::CounterStrafe);
+        assert_eq!(result.cs_time_ms, Some(30.0));
+        assert_eq!(result.shot_delay_ms, Some(110.0));
+    }
+
+    #[test]
+    fn held_overlap_is_reported_on_subsequent_shots() {
+        let mut classifier = MovementClassifier::default();
+
+        classifier.on_press('A', 0.0);
+        classifier.on_press('D', 24.0);
+
+        let first_result = apply_counter_strafe_thresholds(classifier.classify_shot(91.0));
+        let second_result = apply_counter_strafe_thresholds(classifier.classify_shot(120.0));
+
+        assert_eq!(first_result.label, ShotLabel::Overlap);
+        assert_eq!(first_result.overlap_time_ms, Some(67.0));
+        assert_eq!(second_result.label, ShotLabel::Overlap);
+        assert_eq!(second_result.overlap_time_ms, Some(96.0));
+    }
+
+    #[test]
+    fn repeated_press_during_overlap_does_not_create_clean_counter_strafe() {
+        let mut classifier = MovementClassifier::default();
+
+        classifier.on_press('A', 0.0);
+        classifier.on_press('D', 20.0);
+        classifier.on_release('A', 100.0);
+        classifier.on_press('D', 110.0);
+
+        let result = apply_counter_strafe_thresholds(classifier.classify_shot(140.0));
+
+        assert_eq!(result.label, ShotLabel::Overlap);
+        assert_eq!(result.overlap_time_ms, Some(120.0));
+    }
+
+    #[test]
+    fn stray_release_does_not_start_counter_strafe_candidate() {
+        let mut classifier = MovementClassifier::default();
+
+        classifier.on_release('A', 100.0);
+        classifier.on_press('D', 130.0);
+
+        let result = apply_counter_strafe_thresholds(classifier.classify_shot(160.0));
+
+        assert_eq!(result.label, ShotLabel::Bad);
+        assert_eq!(result.cs_time_ms, None);
+        assert_eq!(result.shot_delay_ms, None);
     }
 
     #[test]
