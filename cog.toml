@@ -1,0 +1,22 @@
+from_latest_tag = true
+ignore_merge_commits = true
+branch_whitelist = ["main"]
+
+pre_bump_hooks = [
+    "cargo set-version {{version}}",
+    "powershell -NoProfile -ExecutionPolicy Bypass -Command \"cargo metadata --format-version 1 --no-deps | Out-Null\"",
+    "cargo test",
+    "cargo build --release",
+    "powershell -NoProfile -ExecutionPolicy Bypass -Command \"Compress-Archive -Force -LiteralPath 'target/release/dstrafe.exe' -DestinationPath 'target/release/dstrafe-{{version}}-windows-amd64.zip'\"",
+]
+
+[changelog]
+path = "CHANGELOG.md"
+template = "remote"
+remote = "github.com"
+owner = "gnarr"
+repository = "dStrafe"
+
+[commit_types.perf]
+changelog_title = "Performance"
+bump_patch = true

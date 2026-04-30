@@ -1,0 +1,144 @@
+name: Release
+
+on:
+  pull_request:
+    branches:
+      - main
+    types:
+      - closed
+  workflow_dispatch:
+
+permissions:
+  contents: write
+  pull-requests: read
+
+concurrency:
+  group: release-main
+  cancel-in-progress: false
+
+jobs:
+  release:
+    name: Release
+    runs-on: windows-latest
+    if: github.event_name == 'workflow_dispatch' || github.event.pull_request.merged == true
+
+    defaults:
+      run:
+        shell: pwsh
+
+    env:
+      CARGO_TERM_COLOR: always
+
+    steps:
+      - name: Checkout main
+        uses: actions/checkout@v6
+        with:
+          ref: main
+          fetch-depth: 0
+          token: ${{ secrets.RELEASE_TOKEN || github.token }}
+
+      - name: Ensure main branch
+        run: |
+          git fetch origin main --tags
+          git checkout -B main origin/main
+
+      - name: Install Rust
+        uses: dtolnay/rust-toolchain@stable
+
+      - name: Install cargo-edit
+        run: cargo install cargo-edit --locked
+
+      - name: Conventional commit check
+        uses: cocogitto/cocogitto-action@v4
+        with:
+          command: check
+          args: --from-latest-tag
+          git-user: github-actions[bot]
+          git-user-email: 41898282+github-actions[bot]@users.noreply.github.com
+
+      - name: Determine release version
+        id: release_plan
+        run: |
+          $latestTag = git describe --tags --abbrev=0 --match "[0-9]*.[0-9]*.[0-9]*" 2>$null
+          if ($LASTEXITCODE -ne 0 -or [string]::IsNullOrWhiteSpace($latestTag)) {
+            throw "No plain SemVer baseline tag found. Create the initial tag matching Cargo.toml, for example: git tag 0.1.0 && git push origin 0.1.0"
+          }
+
+          $range = "$latestTag..HEAD"
+          $rawCommits = (git log $range --format="%B%x1e") -join "`n"
+          $shouldRelease = $false
+
+          foreach ($commit in ($rawCommits -split [char]0x1e)) {
+            $message = $commit.Trim()
+            if ([string]::IsNullOrWhiteSpace($message)) {
+              continue
+            }
+
+            $subject = ($message -split "`r?`n", 2)[0]
+            if ($subject -match "^(feat|fix|perf)(\([^)]+\))?!?:") {
+              $shouldRelease = $true
+              break
+            }
+
+            if ($subject -match "^[A-Za-z]+(\([^)]+\))?!:") {
+              $shouldRelease = $true
+              break
+            }
+
+            if ($message -match "(?m)^BREAKING[ -]CHANGE:") {
+              $shouldRelease = $true
+              break
+            }
+          }
+
+          if (-not $shouldRelease) {
+            "should_release=false" | Out-File -FilePath $env:GITHUB_OUTPUT -Encoding utf8 -Append
+            "version=" | Out-File -FilePath $env:GITHUB_OUTPUT -Encoding utf8 -Append
+            Write-Host "No SemVer-bumping conventional commits found since $latestTag. Skipping release."
+            exit 0
+          }
+
+          $versionOutput = cog bump --dry-run --auto
+          if ($LASTEXITCODE -ne 0) {
+            throw "Failed to calculate next release version."
+          }
+
+          $version = ($versionOutput | Select-Object -Last 1).Trim()
+          if ($version -notmatch "^\d+\.\d+\.\d+(-[0-9A-Za-z.-]+)?(\+[0-9A-Za-z.-]+)?$") {
+            throw "Cocogitto returned an invalid SemVer version: $version"
+          }
+
+          "should_release=true" | Out-File -FilePath $env:GITHUB_OUTPUT -Encoding utf8 -Append
+          "version=$version" | Out-File -FilePath $env:GITHUB_OUTPUT -Encoding utf8 -Append
+          Write-Host "Next release version: $version"
+
+      - name: Create release commit and tag
+        if: steps.release_plan.outputs.should_release == 'true'
+        run: cog bump --auto
+
+      - name: Push release commit and tag
+        if: steps.release_plan.outputs.should_release == 'true'
+        run: |
+          $version = "${{ steps.release_plan.outputs.version }}"
+          git push origin HEAD:main
+          git push origin $version
+
+      - name: Generate release notes
+        id: release_notes
+        if: steps.release_plan.outputs.should_release == 'true'
+        run: |
+          $version = "${{ steps.release_plan.outputs.version }}"
+          $notesPath = Join-Path $env:RUNNER_TEMP "release-notes-$version.md"
+          cog changelog --at $version | Out-File -FilePath $notesPath -Encoding utf8
+          "notes_path=$notesPath" | Out-File -FilePath $env:GITHUB_OUTPUT -Encoding utf8 -Append
+
+      - name: Publish GitHub release
+        if: steps.release_plan.outputs.should_release == 'true'
+        uses: softprops/action-gh-release@v3
+        with:
+          tag_name: ${{ steps.release_plan.outputs.version }}
+          name: ${{ steps.release_plan.outputs.version }}
+          body_path: ${{ steps.release_notes.outputs.notes_path }}
+          files: target/release/dstrafe-${{ steps.release_plan.outputs.version }}-windows-amd64.zip
+          fail_on_unmatched_files: true
+          token: ${{ secrets.RELEASE_TOKEN || github.token }}
