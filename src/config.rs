@@ -256,4 +256,26 @@ mod tests {
         assert_eq!(config.movement, MovementKeys::default());
         assert!(!config.debug);
     }
+
+    #[test]
+    fn load_with_diagnostics_warns_and_falls_back_to_defaults_for_invalid_toml() {
+        let path = std::env::temp_dir().join(format!(
+            "dstrafe-invalid-config-{}-{}.toml",
+            std::process::id(),
+            std::time::SystemTime::now()
+                .duration_since(std::time::UNIX_EPOCH)
+                .expect("system clock should be after Unix epoch")
+                .as_nanos()
+        ));
+        std::fs::write(&path, "debug = ").expect("write invalid config");
+
+        let loaded = AppConfig::load_from_path_with_diagnostics(&path);
+
+        std::fs::remove_file(&path).expect("remove invalid config");
+        assert_eq!(loaded.config, AppConfig::default());
+        let warning = loaded
+            .warning
+            .expect("invalid TOML should return a warning");
+        assert!(warning.starts_with("Ignoring "));
+    }
 }
