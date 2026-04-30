@@ -21,6 +21,7 @@ cargo run --release
 ## Hotkeys
 
 - `F6`: hide or show the overlay
+- `Ctrl+F7`: move to display 2 and toggle borderless fullscreen; ignored when only one display is available
 - `F8`: exit
 - `=`: increase overlay text size
 - `-`: decrease overlay text size

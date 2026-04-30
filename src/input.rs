@@ -19,6 +19,7 @@ pub fn start_input_listener(proxy: EventLoopProxy<UiCommand>, movement_keys: Mov
                 classifier,
                 movement_keys,
                 proxy,
+                shortcuts: ShortcutState::default(),
             };
 
             if let Err(error) = listen(move |event| listener.handle_event(event)) {
@@ -34,6 +35,7 @@ struct InputListener {
     classifier: MovementClassifier,
     movement_keys: MovementKeys,
     proxy: EventLoopProxy<UiCommand>,
+    shortcuts: ShortcutState,
 }
 
 impl InputListener {
@@ -46,13 +48,17 @@ impl InputListener {
             EventType::KeyPress(Key::Equal) => self.send(UiCommand::IncreaseSize),
             EventType::KeyPress(Key::Minus) => self.send(UiCommand::DecreaseSize),
             EventType::KeyPress(key) => {
-                if let Some(key) = key_to_char(key)
+                if let Some(command) = self.shortcuts.on_key_press(key) {
+                    self.send(command);
+                } else if let Some(key) = key_to_char(key)
                     && self.movement_keys.contains(key)
                 {
                     self.classifier.on_press(key, timestamp_ms);
                 }
             }
             EventType::KeyRelease(key) => {
+                self.shortcuts.on_key_release(key);
+
                 if let Some(key) = key_to_char(key)
                     && self.movement_keys.contains(key)
                 {
@@ -72,6 +78,48 @@ impl InputListener {
         if self.proxy.send_event(command).is_err() {
             log::debug!("event loop is no longer accepting input events");
         }
+    }
+}
+
+#[derive(Default)]
+struct ShortcutState {
+    left_ctrl_down: bool,
+    right_ctrl_down: bool,
+    f7_down: bool,
+}
+
+impl ShortcutState {
+    fn on_key_press(&mut self, key: Key) -> Option<UiCommand> {
+        match key {
+            Key::ControlLeft => self.left_ctrl_down = true,
+            Key::ControlRight => self.right_ctrl_down = true,
+            Key::F7 => {
+                if self.f7_down {
+                    return None;
+                }
+
+                self.f7_down = true;
+                if self.is_ctrl_down() {
+                    return Some(UiCommand::ToggleSecondDisplayFullscreen);
+                }
+            }
+            _ => {}
+        }
+
+        None
+    }
+
+    fn on_key_release(&mut self, key: Key) {
+        match key {
+            Key::ControlLeft => self.left_ctrl_down = false,
+            Key::ControlRight => self.right_ctrl_down = false,
+            Key::F7 => self.f7_down = false,
+            _ => {}
+        }
+    }
+
+    fn is_ctrl_down(&self) -> bool {
+        self.left_ctrl_down || self.right_ctrl_down
     }
 }
 
@@ -120,5 +168,75 @@ fn key_to_char(key: Key) -> Option<char> {
         Key::Num8 | Key::Kp8 => Some('8'),
         Key::Num9 | Key::Kp9 => Some('9'),
         _ => None,
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::ShortcutState;
+    use crate::app::UiCommand;
+    use rdev::Key;
+
+    #[test]
+    fn left_control_f7_toggles_fullscreen() {
+        let mut shortcuts = ShortcutState::default();
+
+        assert_eq!(shortcuts.on_key_press(Key::ControlLeft), None);
+        assert_eq!(
+            shortcuts.on_key_press(Key::F7),
+            Some(UiCommand::ToggleSecondDisplayFullscreen)
+        );
+    }
+
+    #[test]
+    fn right_control_f7_toggles_fullscreen() {
+        let mut shortcuts = ShortcutState::default();
+
+        assert_eq!(shortcuts.on_key_press(Key::ControlRight), None);
+        assert_eq!(
+            shortcuts.on_key_press(Key::F7),
+            Some(UiCommand::ToggleSecondDisplayFullscreen)
+        );
+    }
+
+    #[test]
+    fn f7_without_control_does_not_toggle_fullscreen() {
+        let mut shortcuts = ShortcutState::default();
+
+        assert_eq!(shortcuts.on_key_press(Key::F7), None);
+    }
+
+    #[test]
+    fn releasing_one_control_keeps_other_control_active() {
+        let mut shortcuts = ShortcutState::default();
+
+        shortcuts.on_key_press(Key::ControlLeft);
+        shortcuts.on_key_press(Key::ControlRight);
+        shortcuts.on_key_release(Key::ControlLeft);
+
+        assert_eq!(
+            shortcuts.on_key_press(Key::F7),
+            Some(UiCommand::ToggleSecondDisplayFullscreen)
+        );
+    }
+
+    #[test]
+    fn held_f7_does_not_repeat_fullscreen_toggle() {
+        let mut shortcuts = ShortcutState::default();
+
+        shortcuts.on_key_press(Key::ControlLeft);
+
+        assert_eq!(
+            shortcuts.on_key_press(Key::F7),
+            Some(UiCommand::ToggleSecondDisplayFullscreen)
+        );
+        assert_eq!(shortcuts.on_key_press(Key::F7), None);
+
+        shortcuts.on_key_release(Key::F7);
+
+        assert_eq!(
+            shortcuts.on_key_press(Key::F7),
+            Some(UiCommand::ToggleSecondDisplayFullscreen)
+        );
     }
 }

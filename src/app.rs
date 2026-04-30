@@ -10,17 +10,19 @@ use winit::application::ApplicationHandler;
 use winit::dpi::{LogicalSize, PhysicalSize};
 use winit::event::WindowEvent;
 use winit::event_loop::{ActiveEventLoop, EventLoop};
-use winit::window::{Window, WindowAttributes, WindowId, WindowLevel};
+use winit::monitor::MonitorHandle;
+use winit::window::{Fullscreen, Window, WindowAttributes, WindowId, WindowLevel};
 
 const INITIAL_WIDTH: f64 = 260.0;
 const INITIAL_HEIGHT: f64 = 96.0;
 const MIN_BODY_FONT_SIZE: f32 = 8.0;
 const MAX_BODY_FONT_SIZE: f32 = 24.0;
 
-#[derive(Clone, Debug)]
+#[derive(Clone, Debug, PartialEq)]
 pub enum UiCommand {
     Shot(ShotClassification),
     ToggleVisible,
+    ToggleSecondDisplayFullscreen,
     IncreaseSize,
     DecreaseSize,
     Exit,
@@ -44,6 +46,7 @@ struct OverlayApplication {
     egui_state: Option<egui_winit::State>,
     graphics: Option<GraphicsState>,
     overlay: OverlayState,
+    is_fullscreen: bool,
 }
 
 impl ApplicationHandler<UiCommand> for OverlayApplication {
@@ -80,7 +83,14 @@ impl ApplicationHandler<UiCommand> for OverlayApplication {
         }
 
         match event {
-            WindowEvent::CloseRequested | WindowEvent::Destroyed => event_loop.exit(),
+            WindowEvent::CloseRequested => {
+                log::info!("window close requested; exiting");
+                event_loop.exit();
+            }
+            WindowEvent::Destroyed => {
+                log::info!("window destroyed; exiting");
+                event_loop.exit();
+            }
             WindowEvent::Resized(size) => {
                 if let Some(graphics) = self.graphics.as_mut() {
                     graphics.resize(size);
@@ -100,15 +110,21 @@ impl ApplicationHandler<UiCommand> for OverlayApplication {
         match event {
             UiCommand::Shot(result) => self.overlay.last_result = Some(result),
             UiCommand::ToggleVisible => self.toggle_visibility(),
+            UiCommand::ToggleSecondDisplayFullscreen => {
+                self.toggle_second_display_fullscreen(event_loop)
+            }
             UiCommand::IncreaseSize => self.overlay.increase_size(),
             UiCommand::DecreaseSize => self.overlay.decrease_size(),
             UiCommand::Exit => {
+                log::info!("exit hotkey pressed; exiting");
                 event_loop.exit();
                 return;
             }
         }
 
-        self.apply_desired_window_size();
+        if !self.is_fullscreen {
+            self.apply_desired_window_size();
+        }
 
         if let Some(window) = self.window.as_ref()
             && self.overlay.is_visible
@@ -160,22 +176,28 @@ impl OverlayApplication {
             return;
         }
 
-        match graphics.render(window, &self.egui_ctx, egui_state, &mut self.overlay) {
+        match graphics.render(
+            window,
+            &self.egui_ctx,
+            egui_state,
+            &mut self.overlay,
+            self.is_fullscreen,
+        ) {
             Ok(()) => {}
             Err(RenderAction::SkipFrame) => {}
             Err(RenderAction::Reconfigure) => {
-                graphics.resize(window.inner_size());
-                window.request_redraw();
-            }
-            Err(RenderAction::RecreateSurface) => {
-                if let Err(error) = graphics.recreate_surface(window.clone()) {
-                    log::error!("failed to recreate surface: {error}");
-                    event_loop.exit();
-                } else {
+                if graphics.resize(window.inner_size()) {
                     window.request_redraw();
                 }
             }
-            Err(RenderAction::Exit) => event_loop.exit(),
+            Err(RenderAction::RecreateSurface) => match graphics.recreate_surface(window.clone()) {
+                Ok(true) => window.request_redraw(),
+                Ok(false) => {}
+                Err(error) => {
+                    log::error!("failed to recreate surface: {error}");
+                    event_loop.exit();
+                }
+            },
         }
     }
 
@@ -185,6 +207,30 @@ impl OverlayApplication {
         if let Some(window) = self.window.as_ref() {
             window.set_visible(self.overlay.is_visible);
         }
+    }
+
+    fn toggle_second_display_fullscreen(&mut self, event_loop: &ActiveEventLoop) {
+        let Some(window) = self.window.as_ref() else {
+            return;
+        };
+
+        if self.is_fullscreen {
+            window.set_fullscreen(None);
+            self.is_fullscreen = false;
+            return;
+        }
+
+        let Some(monitor) = second_display_monitor(event_loop) else {
+            log::warn!("Ctrl+F7 ignored: no second display is available");
+            return;
+        };
+
+        let position = monitor.position();
+        let display_name = monitor.name().unwrap_or_else(|| "display 2".to_owned());
+        log::info!("entering fullscreen on {display_name}");
+        window.set_outer_position(position);
+        window.set_fullscreen(Some(Fullscreen::Borderless(Some(monitor))));
+        self.is_fullscreen = true;
     }
 
     fn apply_desired_window_size(&self) {
@@ -203,6 +249,7 @@ struct GraphicsState {
     config: wgpu::SurfaceConfiguration,
     renderer: Renderer,
     size: PhysicalSize<u32>,
+    surface_configured: bool,
 }
 
 impl GraphicsState {
@@ -211,9 +258,12 @@ impl GraphicsState {
         event_loop: &ActiveEventLoop,
     ) -> Result<Self, Box<dyn Error>> {
         let size = non_zero_size(window.inner_size());
-        let instance = wgpu::Instance::new(wgpu::InstanceDescriptor::new_with_display_handle(
-            Box::new(event_loop.owned_display_handle()),
+        let mut instance_descriptor = wgpu::InstanceDescriptor::new_with_display_handle(Box::new(
+            event_loop.owned_display_handle(),
         ));
+        instance_descriptor.backends =
+            wgpu::Backends::from_env().unwrap_or_else(preferred_backends);
+        let instance = wgpu::Instance::new(instance_descriptor);
         let surface = instance.create_surface(window)?;
         let adapter = instance
             .request_adapter(&wgpu::RequestAdapterOptions {
@@ -222,6 +272,12 @@ impl GraphicsState {
                 compatible_surface: Some(&surface),
             })
             .await?;
+        let adapter_info = adapter.get_info();
+        log::info!(
+            "using {:?} backend adapter: {}",
+            adapter_info.backend,
+            adapter_info.name
+        );
         let (device, queue) = adapter
             .request_device(&wgpu::DeviceDescriptor {
                 label: Some("dStrafe device"),
@@ -230,8 +286,13 @@ impl GraphicsState {
                 ..Default::default()
             })
             .await?;
+        device.on_uncaptured_error(Arc::new(|error| {
+            log::error!("uncaptured wgpu error: {error:#?}");
+        }));
         let config = surface_config(&surface, &adapter, size)?;
-        surface.configure(&device, &config);
+        configure_surface_checked(&surface, &device, &config).map_err(|error| {
+            std::io::Error::other(format!("failed to configure surface: {error}"))
+        })?;
         let renderer = Renderer::new(
             &device,
             config.format,
@@ -246,6 +307,7 @@ impl GraphicsState {
             config,
             renderer,
             size,
+            surface_configured: true,
         })
     }
 
@@ -253,18 +315,36 @@ impl GraphicsState {
         self.device.limits().max_texture_dimension_2d as usize
     }
 
-    fn resize(&mut self, size: PhysicalSize<u32>) {
+    fn resize(&mut self, size: PhysicalSize<u32>) -> bool {
         let size = non_zero_size(size);
         self.size = size;
         self.config.width = size.width;
         self.config.height = size.height;
-        self.surface.configure(&self.device, &self.config);
+        self.configure_surface()
     }
 
-    fn recreate_surface(&mut self, window: Arc<Window>) -> Result<(), wgpu::CreateSurfaceError> {
+    fn recreate_surface(&mut self, window: Arc<Window>) -> Result<bool, wgpu::CreateSurfaceError> {
+        self.surface_configured = false;
+        let size = non_zero_size(window.inner_size());
+        self.size = size;
+        self.config.width = size.width;
+        self.config.height = size.height;
         self.surface = self.instance.create_surface(window)?;
-        self.surface.configure(&self.device, &self.config);
-        Ok(())
+        Ok(self.configure_surface())
+    }
+
+    fn configure_surface(&mut self) -> bool {
+        match configure_surface_checked(&self.surface, &self.device, &self.config) {
+            Ok(()) => {
+                self.surface_configured = true;
+                true
+            }
+            Err(error) => {
+                log::warn!("surface configure failed: {error}");
+                self.surface_configured = false;
+                false
+            }
+        }
     }
 
     fn render(
@@ -273,9 +353,19 @@ impl GraphicsState {
         egui_ctx: &egui::Context,
         egui_state: &mut egui_winit::State,
         overlay: &mut OverlayState,
+        is_fullscreen: bool,
     ) -> Result<(), RenderAction> {
+        let window_size = non_zero_size(window.inner_size());
+        if self.size != window_size {
+            self.resize(window_size);
+        }
+
+        if !self.surface_configured && !self.configure_surface() {
+            return Err(RenderAction::SkipFrame);
+        }
+
         let raw_input = egui_state.take_egui_input(window);
-        let output = egui_ctx.run_ui(raw_input, |ui| overlay.ui(ui, window));
+        let output = egui_ctx.run_ui(raw_input, |ui| overlay.ui(ui, window, is_fullscreen));
         egui_state.handle_platform_output(window, output.platform_output);
 
         let pixels_per_point = egui_winit::pixels_per_point(egui_ctx, window);
@@ -298,7 +388,11 @@ impl GraphicsState {
             }
             CurrentSurfaceTexture::Outdated => return Err(RenderAction::Reconfigure),
             CurrentSurfaceTexture::Lost => return Err(RenderAction::RecreateSurface),
-            CurrentSurfaceTexture::Validation => return Err(RenderAction::Exit),
+            CurrentSurfaceTexture::Validation => {
+                self.surface_configured = false;
+                log::warn!("surface validation failed; recreating surface");
+                return Err(RenderAction::RecreateSurface);
+            }
         };
 
         let view = frame
@@ -366,7 +460,6 @@ enum RenderAction {
     SkipFrame,
     Reconfigure,
     RecreateSurface,
-    Exit,
 }
 
 fn surface_config(
@@ -418,6 +511,58 @@ fn non_zero_size(size: PhysicalSize<u32>) -> PhysicalSize<u32> {
     PhysicalSize::new(size.width.max(1), size.height.max(1))
 }
 
+fn preferred_backends() -> wgpu::Backends {
+    if cfg!(target_os = "windows") {
+        wgpu::Backends::DX12
+    } else {
+        wgpu::Backends::PRIMARY
+    }
+}
+
+fn configure_surface_checked(
+    surface: &wgpu::Surface<'static>,
+    device: &wgpu::Device,
+    config: &wgpu::SurfaceConfiguration,
+) -> Result<(), String> {
+    let out_of_memory_scope = device.push_error_scope(wgpu::ErrorFilter::OutOfMemory);
+    let internal_scope = device.push_error_scope(wgpu::ErrorFilter::Internal);
+    let validation_scope = device.push_error_scope(wgpu::ErrorFilter::Validation);
+
+    surface.configure(device, config);
+
+    let mut errors = Vec::new();
+    if let Some(error) = pollster::block_on(validation_scope.pop()) {
+        errors.push(format!("{error:#?}"));
+    }
+    if let Some(error) = pollster::block_on(internal_scope.pop()) {
+        errors.push(format!("{error:#?}"));
+    }
+    if let Some(error) = pollster::block_on(out_of_memory_scope.pop()) {
+        errors.push(format!("{error:#?}"));
+    }
+
+    if errors.is_empty() {
+        Ok(())
+    } else {
+        Err(errors.join("; "))
+    }
+}
+
+fn second_display_monitor(event_loop: &ActiveEventLoop) -> Option<MonitorHandle> {
+    let monitors = event_loop.available_monitors().collect::<Vec<_>>();
+    if monitors.len() < 2 {
+        return None;
+    }
+
+    if let Some(primary) = event_loop.primary_monitor()
+        && let Some(monitor) = monitors.iter().find(|monitor| **monitor != primary)
+    {
+        return Some(monitor.clone());
+    }
+
+    monitors.get(1).cloned()
+}
+
 struct OverlayState {
     is_visible: bool,
     header_font_size: f32,
@@ -437,7 +582,7 @@ impl Default for OverlayState {
 }
 
 impl OverlayState {
-    fn ui(&mut self, ui: &mut egui::Ui, window: &Window) {
+    fn ui(&mut self, ui: &mut egui::Ui, window: &Window, is_fullscreen: bool) {
         if self.header_font_size == 0.0 {
             self.header_font_size = 12.0;
         }
@@ -445,6 +590,14 @@ impl OverlayState {
             self.body_font_size = 10.0;
         }
 
+        if is_fullscreen {
+            self.fullscreen_ui(ui);
+        } else {
+            self.compact_ui(ui, window);
+        }
+    }
+
+    fn compact_ui(&mut self, ui: &mut egui::Ui, window: &Window) {
         egui::CentralPanel::default()
             .frame(
                 Frame::new()
@@ -485,6 +638,48 @@ impl OverlayState {
                         let label = Label::new(
                             RichText::new(text)
                                 .font(FontId::monospace(self.body_font_size))
+                                .color(Color32::WHITE),
+                        )
+                        .selectable(false)
+                        .halign(Align::Center);
+                        ui.add(label);
+                    },
+                );
+            });
+    }
+
+    fn fullscreen_ui(&mut self, ui: &mut egui::Ui) {
+        egui::CentralPanel::default()
+            .frame(
+                Frame::new()
+                    .fill(self.background_color())
+                    .inner_margin(Margin::ZERO),
+            )
+            .show_inside(ui, |ui| {
+                let header_height = 56.0;
+                let header_width = ui.available_width();
+                let (rect, _) =
+                    ui.allocate_exact_size(egui::vec2(header_width, header_height), Sense::hover());
+
+                ui.painter()
+                    .rect_filled(rect, 0.0, Color32::from_rgb(48, 48, 48));
+                ui.painter().text(
+                    rect.center(),
+                    Align2::CENTER_CENTER,
+                    "dStrafe",
+                    FontId::monospace(24.0),
+                    Color32::WHITE,
+                );
+
+                let text = self.display_text();
+                let font_size = fullscreen_font_size(&text, ui.available_size());
+                ui.allocate_ui_with_layout(
+                    ui.available_size(),
+                    Layout::centered_and_justified(egui::Direction::TopDown),
+                    |ui| {
+                        let label = Label::new(
+                            RichText::new(text)
+                                .font(FontId::monospace(font_size))
                                 .color(Color32::WHITE),
                         )
                         .selectable(false)
@@ -540,6 +735,13 @@ impl OverlayState {
         (width, height)
     }
 
+    fn display_text(&self) -> String {
+        self.last_result.as_ref().map_or_else(
+            || "Waiting for input...".to_owned(),
+            |result| result.display_text(),
+        )
+    }
+
     fn background_color(&self) -> Color32 {
         match self.last_result.as_ref().map(|result| result.label) {
             Some(ShotLabel::CounterStrafe) => Color32::from_rgb(34, 139, 34),
@@ -557,4 +759,13 @@ impl OverlayState {
             self.body_font_size = 10.0;
         }
     }
+}
+
+fn fullscreen_font_size(text: &str, available_size: egui::Vec2) -> f32 {
+    let max_line_len = text.lines().map(str::len).max().unwrap_or(1).max(1) as f32;
+    let line_count = text.lines().count().max(1) as f32;
+    let width_limited = available_size.x * 0.88 / (max_line_len * 0.62);
+    let height_limited = available_size.y * 0.72 / (line_count * 1.2);
+
+    width_limited.min(height_limited).clamp(20.0, 140.0)
 }
