@@ -97,17 +97,18 @@ impl AxisState {
 
     fn classify_shot(&mut self, shot_time_ms: f64) -> AxisClassification {
         if let Some(overlap_start_time) = self.overlap_start_time {
-            let has_clean_counter_after_overlap = self.cs_candidate.is_some_and(|candidate| {
-                candidate.release_time_ms > overlap_start_time
-                    && candidate.press_time_ms > candidate.release_time_ms
-                    && self.keys.contains(&candidate.release_key)
-                    && self.keys.contains(&candidate.press_key)
-                    && candidate.press_key != candidate.release_key
-            }) || self.cs_press_time.is_some_and(|cs_press_time| {
-                self.cs_release_time.is_some_and(|cs_release_time| {
-                    cs_release_time > overlap_start_time && cs_press_time > cs_release_time
-                })
-            });
+            let has_clean_counter_after_overlap =
+                self.cs_candidate.is_some_and(|candidate| {
+                    candidate.release_time_ms > overlap_start_time
+                        && candidate.press_time_ms > candidate.release_time_ms
+                        && self.keys.contains(&candidate.release_key)
+                        && self.keys.contains(&candidate.press_key)
+                        && candidate.press_key != candidate.release_key
+                }) || self.cs_press_time.is_some_and(|cs_press_time| {
+                    self.cs_release_time.is_some_and(|cs_release_time| {
+                        cs_release_time > overlap_start_time && cs_press_time > cs_release_time
+                    })
+                });
 
             if !has_clean_counter_after_overlap {
                 let overlap_time = shot_time_ms - overlap_start_time;
@@ -278,7 +279,7 @@ impl ShotClassification {
     }
 }
 
-pub fn apply_counter_strafe_thresholds(base: ShotClassification) -> ShotClassification {
+fn apply_counter_strafe_thresholds(base: ShotClassification) -> ShotClassification {
     match base.label {
         ShotLabel::Overlap => ShotClassification {
             label: ShotLabel::Overlap,
@@ -417,9 +418,7 @@ fn choose_axis_classification(
 
 #[cfg(test)]
 mod tests {
-    use super::{
-        MovementClassifier, ShotLabel, apply_counter_strafe_thresholds, choose_axis_classification,
-    };
+    use super::{MovementClassifier, ShotLabel, choose_axis_classification};
 
     #[test]
     fn classifies_counter_strafe_when_opposite_key_is_pressed_before_shot() {
@@ -429,7 +428,7 @@ mod tests {
         classifier.on_release('A', 100.0);
         classifier.on_press('D', 132.0);
 
-        let result = apply_counter_strafe_thresholds(classifier.classify_shot(180.0));
+        let result = classifier.classify_shot(180.0);
 
         assert_eq!(result.label, ShotLabel::CounterStrafe);
         assert_eq!(result.cs_time_ms, Some(32.0));
@@ -443,7 +442,7 @@ mod tests {
         classifier.on_press('A', 0.0);
         classifier.on_press('D', 24.0);
 
-        let result = apply_counter_strafe_thresholds(classifier.classify_shot(91.0));
+        let result = classifier.classify_shot(91.0);
 
         assert_eq!(result.label, ShotLabel::Overlap);
         assert_eq!(result.overlap_time_ms, Some(67.0));
@@ -457,7 +456,7 @@ mod tests {
         classifier.on_release('A', 120.0);
         classifier.on_press('D', 150.0);
 
-        let result = apply_counter_strafe_thresholds(classifier.classify_shot(401.0));
+        let result = classifier.classify_shot(401.0);
 
         assert_eq!(result.label, ShotLabel::Bad);
         assert_eq!(result.cs_time_ms, Some(30.0));
@@ -474,7 +473,7 @@ mod tests {
         classifier.on_release('A', 100.0);
         classifier.on_press('D', 125.0);
 
-        let result = apply_counter_strafe_thresholds(classifier.classify_shot(160.0));
+        let result = classifier.classify_shot(160.0);
 
         assert_eq!(result.label, ShotLabel::Overlap);
         assert_eq!(result.overlap_time_ms, Some(135.0));
@@ -489,7 +488,7 @@ mod tests {
         classifier.on_press('D', 132.0);
         classifier.on_release('D', 170.0);
 
-        let result = apply_counter_strafe_thresholds(classifier.classify_shot(180.0));
+        let result = classifier.classify_shot(180.0);
 
         assert_eq!(result.label, ShotLabel::CounterStrafe);
         assert_eq!(result.cs_time_ms, Some(32.0));
@@ -507,7 +506,7 @@ mod tests {
         classifier.on_press('D', 132.0);
         classifier.on_release('D', 150.0);
 
-        let result = apply_counter_strafe_thresholds(classifier.classify_shot(180.0));
+        let result = classifier.classify_shot(180.0);
 
         assert_eq!(result.label, ShotLabel::CounterStrafe);
         assert_eq!(result.cs_time_ms, Some(32.0));
@@ -525,7 +524,7 @@ mod tests {
         classifier.on_release('A', 400.0);
         classifier.on_press('D', 430.0);
 
-        let result = apply_counter_strafe_thresholds(classifier.classify_shot(540.0));
+        let result = classifier.classify_shot(540.0);
 
         assert_eq!(result.label, ShotLabel::CounterStrafe);
         assert_eq!(result.cs_time_ms, Some(30.0));
@@ -562,8 +561,8 @@ mod tests {
         classifier.on_press('A', 0.0);
         classifier.on_press('D', 24.0);
 
-        let first_result = apply_counter_strafe_thresholds(classifier.classify_shot(91.0));
-        let second_result = apply_counter_strafe_thresholds(classifier.classify_shot(120.0));
+        let first_result = classifier.classify_shot(91.0);
+        let second_result = classifier.classify_shot(120.0);
 
         assert_eq!(first_result.label, ShotLabel::Overlap);
         assert_eq!(first_result.overlap_time_ms, Some(67.0));
@@ -580,7 +579,7 @@ mod tests {
         classifier.on_release('D', 100.0);
         classifier.on_press('D', 300.0);
 
-        let result = apply_counter_strafe_thresholds(classifier.classify_shot(350.0));
+        let result = classifier.classify_shot(350.0);
 
         assert_eq!(result.label, ShotLabel::Overlap);
         assert_eq!(result.overlap_time_ms, Some(50.0));
@@ -595,7 +594,7 @@ mod tests {
         classifier.on_release('A', 100.0);
         classifier.on_press('D', 110.0);
 
-        let result = apply_counter_strafe_thresholds(classifier.classify_shot(140.0));
+        let result = classifier.classify_shot(140.0);
 
         assert_eq!(result.label, ShotLabel::Overlap);
         assert_eq!(result.overlap_time_ms, Some(120.0));
@@ -608,7 +607,7 @@ mod tests {
         classifier.on_release('A', 100.0);
         classifier.on_press('D', 130.0);
 
-        let result = apply_counter_strafe_thresholds(classifier.classify_shot(160.0));
+        let result = classifier.classify_shot(160.0);
 
         assert_eq!(result.label, ShotLabel::Bad);
         assert_eq!(result.cs_time_ms, None);
@@ -616,7 +615,7 @@ mod tests {
     }
 
     #[test]
-    fn equal_negativity_prefers_longer_primary_time() {
+    fn equal_selection_rank_prefers_longer_primary_time() {
         let vertical = super::AxisClassification::Overlap {
             overlap_time_ms: 20.0,
         };
