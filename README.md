@@ -18,7 +18,7 @@ cargo run --release
 
 `dStrafe` is Windows-first. Linux and macOS depend on the platform support and permissions available to `rdev` for global input capture.
 
-To show a debug console and default logs to debug level, set `debug = true` in `dstrafe.toml`.
+To show a debug console and default logging to debug level, set `debug = true` in `dstrafe.toml`.
 
 ## Hotkeys
 
