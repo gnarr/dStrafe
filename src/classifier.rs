@@ -97,7 +97,13 @@ impl AxisState {
 
     fn classify_shot(&mut self, shot_time_ms: f64) -> AxisClassification {
         if let Some(overlap_start_time) = self.overlap_start_time {
-            let has_clean_counter_after_overlap = self.cs_press_time.is_some_and(|cs_press_time| {
+            let has_clean_counter_after_overlap = self.cs_candidate.is_some_and(|candidate| {
+                candidate.release_time_ms > overlap_start_time
+                    && candidate.press_time_ms > candidate.release_time_ms
+                    && self.keys.contains(&candidate.release_key)
+                    && self.keys.contains(&candidate.press_key)
+                    && candidate.press_key != candidate.release_key
+            }) || self.cs_press_time.is_some_and(|cs_press_time| {
                 self.cs_release_time.is_some_and(|cs_release_time| {
                     cs_release_time > overlap_start_time && cs_press_time > cs_release_time
                 })
@@ -291,7 +297,13 @@ pub fn apply_counter_strafe_thresholds(base: ShotClassification) -> ShotClassifi
                 ShotClassification::bad()
             }
         }
-        ShotLabel::Bad => ShotClassification::bad(),
+        ShotLabel::Bad => {
+            if let (Some(cs_time), Some(shot_delay)) = (base.cs_time_ms, base.shot_delay_ms) {
+                ShotClassification::bad_with_timing(cs_time, shot_delay)
+            } else {
+                ShotClassification::bad()
+            }
+        }
     }
 }
 
@@ -315,6 +327,7 @@ impl MovementClassifier {
     pub fn new(vertical_keys: [char; 2], horizontal_keys: [char; 2]) -> Result<Self, String> {
         validate_axis_keys(vertical_keys, "vertical")?;
         validate_axis_keys(horizontal_keys, "horizontal")?;
+        validate_movement_keys(vertical_keys, horizontal_keys)?;
 
         Ok(Self {
             vertical: AxisState::new(vertical_keys.map(|key| key.to_ascii_uppercase())),
@@ -347,7 +360,7 @@ impl MovementClassifier {
         let horizontal = self.horizontal.classify_shot(shot_time_ms);
         let classification = choose_axis_classification(vertical, horizontal);
 
-        match classification {
+        let base = match classification {
             AxisClassification::CounterStrafe {
                 cs_time_ms,
                 shot_delay_ms,
@@ -356,7 +369,9 @@ impl MovementClassifier {
                 ShotClassification::overlap(overlap_time_ms)
             }
             AxisClassification::Bad => ShotClassification::bad(),
-        }
+        };
+
+        apply_counter_strafe_thresholds(base)
     }
 }
 
@@ -364,6 +379,21 @@ fn validate_axis_keys(keys: [char; 2], axis_name: &str) -> Result<(), String> {
     let normalized = keys.map(|key| key.to_ascii_uppercase());
     if normalized[0] == normalized[1] {
         return Err(format!("{axis_name}_keys must contain two distinct keys"));
+    }
+
+    Ok(())
+}
+
+fn validate_movement_keys(
+    vertical_keys: [char; 2],
+    horizontal_keys: [char; 2],
+) -> Result<(), String> {
+    let mut keys = HashSet::new();
+
+    for key in vertical_keys.into_iter().chain(horizontal_keys) {
+        if !keys.insert(key.to_ascii_uppercase()) {
+            return Err("movement_keys must contain four distinct keys".to_owned());
+        }
     }
 
     Ok(())
@@ -467,6 +497,24 @@ mod tests {
     }
 
     #[test]
+    fn counter_strafe_after_overlap_survives_counter_key_release_before_shot() {
+        let mut classifier = MovementClassifier::default();
+
+        classifier.on_press('A', 0.0);
+        classifier.on_press('D', 20.0);
+        classifier.on_release('D', 60.0);
+        classifier.on_release('A', 100.0);
+        classifier.on_press('D', 132.0);
+        classifier.on_release('D', 150.0);
+
+        let result = apply_counter_strafe_thresholds(classifier.classify_shot(180.0));
+
+        assert_eq!(result.label, ShotLabel::CounterStrafe);
+        assert_eq!(result.cs_time_ms, Some(32.0));
+        assert_eq!(result.shot_delay_ms, Some(48.0));
+    }
+
+    #[test]
     fn valid_axis_wins_when_other_counter_strafe_fails_thresholds() {
         let mut classifier = MovementClassifier::default();
 
@@ -482,6 +530,29 @@ mod tests {
         assert_eq!(result.label, ShotLabel::CounterStrafe);
         assert_eq!(result.cs_time_ms, Some(30.0));
         assert_eq!(result.shot_delay_ms, Some(110.0));
+    }
+
+    #[test]
+    fn classify_shot_applies_counter_strafe_thresholds() {
+        let mut classifier = MovementClassifier::default();
+
+        classifier.on_press('A', 0.0);
+        classifier.on_release('A', 120.0);
+        classifier.on_press('D', 150.0);
+
+        let result = classifier.classify_shot(401.0);
+
+        assert_eq!(result.label, ShotLabel::Bad);
+        assert_eq!(result.cs_time_ms, Some(30.0));
+        assert_eq!(result.shot_delay_ms, Some(251.0));
+    }
+
+    #[test]
+    fn duplicate_keys_across_axes_are_rejected() {
+        let error = MovementClassifier::new(['W', 'S'], ['S', 'D'])
+            .expect_err("duplicate movement keys across axes should fail");
+
+        assert!(error.contains("movement_keys"));
     }
 
     #[test]
