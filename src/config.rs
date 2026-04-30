@@ -59,29 +59,58 @@ impl MovementKeys {
 
 #[derive(Clone, Debug, Eq, PartialEq)]
 pub struct AppConfig {
+    pub debug: bool,
     pub movement: MovementKeys,
 }
 
+#[derive(Clone, Debug, Eq, PartialEq)]
+pub struct LoadedAppConfig {
+    pub config: AppConfig,
+    pub warning: Option<String>,
+}
+
 impl AppConfig {
-    pub fn load_from_working_dir() -> Self {
-        Self::load_from_path(Path::new("dstrafe.toml"))
+    pub fn load_from_working_dir_with_diagnostics() -> LoadedAppConfig {
+        Self::load_from_path_with_diagnostics(Path::new("dstrafe.toml"))
     }
 
+    #[cfg(test)]
     pub fn load_from_path(path: &Path) -> Self {
+        let loaded = Self::load_from_path_with_diagnostics(path);
+
+        if let Some(warning) = loaded.warning.as_ref() {
+            log::warn!("{warning}");
+        }
+
+        loaded.config
+    }
+
+    pub fn load_from_path_with_diagnostics(path: &Path) -> LoadedAppConfig {
         let Ok(contents) = fs::read_to_string(path) else {
-            return Self {
-                movement: MovementKeys::default(),
+            return LoadedAppConfig {
+                config: Self::default(),
+                warning: None,
             };
         };
 
         match parse_config(&contents) {
-            Ok(config) => config,
-            Err(error) => {
-                log::warn!("Ignoring {path:?}: {error}");
-                Self {
-                    movement: MovementKeys::default(),
-                }
-            }
+            Ok(config) => LoadedAppConfig {
+                config,
+                warning: None,
+            },
+            Err(error) => LoadedAppConfig {
+                config: Self::default(),
+                warning: Some(format!("Ignoring {path:?}: {error}")),
+            },
+        }
+    }
+}
+
+impl Default for AppConfig {
+    fn default() -> Self {
+        Self {
+            debug: false,
+            movement: MovementKeys::default(),
         }
     }
 }
@@ -99,6 +128,7 @@ impl std::error::Error for ConfigKeyError {}
 
 #[derive(Debug, Deserialize)]
 struct RawConfig {
+    debug: Option<bool>,
     movement: Option<RawMovementConfig>,
 }
 
@@ -112,9 +142,10 @@ struct RawMovementConfig {
 
 fn parse_config(contents: &str) -> Result<AppConfig, Box<dyn std::error::Error>> {
     let raw = toml::from_str::<RawConfig>(contents)?;
+    let debug = raw.debug.unwrap_or(false);
     let movement = MovementKeys::from_raw(raw.movement)?;
 
-    Ok(AppConfig { movement })
+    Ok(AppConfig { debug, movement })
 }
 
 fn parse_key(value: Option<&str>, default: char) -> Result<char, ConfigKeyError> {
@@ -145,6 +176,20 @@ fn unique_key_count(keys: MovementKeys) -> usize {
 #[cfg(test)]
 mod tests {
     use super::{AppConfig, MovementKeys, parse_config};
+
+    #[test]
+    fn missing_debug_defaults_to_false() {
+        let config = parse_config("").expect("empty config");
+
+        assert!(!config.debug);
+    }
+
+    #[test]
+    fn parses_debug_true() {
+        let config = parse_config("debug = true").expect("valid config");
+
+        assert!(config.debug);
+    }
 
     #[test]
     fn parses_valid_movement_keys() {
@@ -209,5 +254,6 @@ mod tests {
         ));
 
         assert_eq!(config.movement, MovementKeys::default());
+        assert!(!config.debug);
     }
 }

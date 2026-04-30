@@ -1,3 +1,5 @@
+debug = false
+
 [movement]
 forward = "W"
 backward = "S"

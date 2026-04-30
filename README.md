@@ -18,6 +18,8 @@ cargo run --release
 
 `dStrafe` is Windows-first. Linux and macOS depend on the platform support and permissions available to `rdev` for global input capture.
 
+To show a debug console and default logs to debug level, set `debug = true` in `dstrafe.toml`.
+
 ## Hotkeys
 
 - `F6`: hide or show the overlay
@@ -31,6 +33,8 @@ cargo run --release
 By default, dStrafe uses WASD. To change this, copy `dstrafe.toml.example` to `dstrafe.toml` in the working directory and edit the single-character ASCII alphanumeric bindings.
 
 ```toml
+debug = false
+
 [movement]
 forward = "W"
 backward = "S"
