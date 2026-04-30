@@ -89,6 +89,7 @@ impl AxisState {
         }
 
         self.held_keys.remove(&key);
+        self.overlap_start_time = None;
         self.cs_release_key = Some(key);
         self.cs_release_time = Some(timestamp_ms);
         self.cs_press_key = None;
@@ -586,7 +587,24 @@ mod tests {
     }
 
     #[test]
-    fn repeated_press_during_overlap_does_not_create_clean_counter_strafe() {
+    fn shot_after_overlap_ends_with_one_key_held_is_bad() {
+        let mut classifier = MovementClassifier::default();
+
+        classifier.on_press('A', 0.0);
+        classifier.on_press('D', 20.0);
+        let first_result = classifier.classify_shot(80.0);
+        classifier.on_release('A', 100.0);
+
+        let result = classifier.classify_shot(140.0);
+
+        assert_eq!(first_result.label, ShotLabel::Overlap);
+        assert_eq!(first_result.overlap_time_ms, Some(60.0));
+        assert_eq!(result.label, ShotLabel::Bad);
+        assert_eq!(result.overlap_time_ms, None);
+    }
+
+    #[test]
+    fn duplicate_press_after_overlap_does_not_create_clean_counter_strafe() {
         let mut classifier = MovementClassifier::default();
 
         classifier.on_press('A', 0.0);
@@ -596,8 +614,9 @@ mod tests {
 
         let result = classifier.classify_shot(140.0);
 
-        assert_eq!(result.label, ShotLabel::Overlap);
-        assert_eq!(result.overlap_time_ms, Some(120.0));
+        assert_eq!(result.label, ShotLabel::Bad);
+        assert_eq!(result.cs_time_ms, None);
+        assert_eq!(result.shot_delay_ms, None);
     }
 
     #[test]
