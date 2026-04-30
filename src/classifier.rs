@@ -390,11 +390,16 @@ fn validate_movement_keys(
     vertical_keys: [char; 2],
     horizontal_keys: [char; 2],
 ) -> Result<(), String> {
-    let mut keys = HashSet::new();
+    let mut keys = HashMap::new();
 
-    for key in vertical_keys.into_iter().chain(horizontal_keys) {
-        if !keys.insert(key.to_ascii_uppercase()) {
-            return Err("movement_keys must contain four distinct keys".to_owned());
+    for (axis_name, axis_keys) in [("vertical", vertical_keys), ("horizontal", horizontal_keys)] {
+        for key in axis_keys {
+            let key = key.to_ascii_uppercase();
+            if let Some(existing_axis_name) = keys.insert(key, axis_name) {
+                return Err(format!(
+                    "movement_keys contains duplicate key '{key}' in {existing_axis_name} and {axis_name} axes"
+                ));
+            }
         }
     }
 
@@ -549,10 +554,13 @@ mod tests {
 
     #[test]
     fn duplicate_keys_across_axes_are_rejected() {
-        let error = MovementClassifier::new(['W', 'S'], ['S', 'D'])
+        let error = MovementClassifier::new(['W', 's'], ['S', 'D'])
             .expect_err("duplicate movement keys across axes should fail");
 
-        assert!(error.contains("movement_keys"));
+        assert_eq!(
+            error,
+            "movement_keys contains duplicate key 'S' in vertical and horizontal axes"
+        );
     }
 
     #[test]
