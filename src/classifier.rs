@@ -53,7 +53,7 @@ impl AxisState {
         self.held_keys.insert(key);
         self.press_times.insert(key, timestamp_ms);
 
-        if self.held_keys.contains(&other) && self.overlap_start_time.is_none() {
+        if self.held_keys.contains(&other) {
             self.overlap_start_time = Some(timestamp_ms);
         }
 
@@ -498,6 +498,21 @@ mod tests {
         assert_eq!(first_result.overlap_time_ms, Some(67.0));
         assert_eq!(second_result.label, ShotLabel::Overlap);
         assert_eq!(second_result.overlap_time_ms, Some(96.0));
+    }
+
+    #[test]
+    fn restarted_overlap_uses_fresh_overlap_start_time() {
+        let mut classifier = MovementClassifier::default();
+
+        classifier.on_press('A', 0.0);
+        classifier.on_press('D', 20.0);
+        classifier.on_release('D', 100.0);
+        classifier.on_press('D', 300.0);
+
+        let result = apply_counter_strafe_thresholds(classifier.classify_shot(350.0));
+
+        assert_eq!(result.label, ShotLabel::Overlap);
+        assert_eq!(result.overlap_time_ms, Some(50.0));
     }
 
     #[test]
