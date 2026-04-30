@@ -107,22 +107,35 @@ impl ApplicationHandler<UiCommand> for OverlayApplication {
     }
 
     fn user_event(&mut self, event_loop: &ActiveEventLoop, event: UiCommand) {
-        match event {
-            UiCommand::Shot(result) => self.overlay.last_result = Some(result),
-            UiCommand::ToggleVisible => self.toggle_visibility(),
-            UiCommand::ToggleSecondDisplayFullscreen => {
-                self.toggle_second_display_fullscreen(event_loop)
+        let should_resize = match event {
+            UiCommand::Shot(result) => {
+                self.overlay.last_result = Some(result);
+                false
             }
-            UiCommand::IncreaseSize => self.overlay.increase_size(),
-            UiCommand::DecreaseSize => self.overlay.decrease_size(),
+            UiCommand::ToggleVisible => {
+                self.toggle_visibility();
+                false
+            }
+            UiCommand::ToggleSecondDisplayFullscreen => {
+                self.toggle_second_display_fullscreen(event_loop);
+                !self.is_fullscreen
+            }
+            UiCommand::IncreaseSize => {
+                self.overlay.increase_size();
+                true
+            }
+            UiCommand::DecreaseSize => {
+                self.overlay.decrease_size();
+                true
+            }
             UiCommand::Exit => {
                 log::info!("exit hotkey pressed; exiting");
                 event_loop.exit();
                 return;
             }
-        }
+        };
 
-        if !self.is_fullscreen {
+        if should_resize && !self.is_fullscreen {
             self.apply_desired_window_size();
         }
 
@@ -484,9 +497,22 @@ fn surface_config(
         .present_modes
         .iter()
         .copied()
-        .find(|mode| *mode == wgpu::PresentMode::Fifo)
-        .or_else(|| capabilities.present_modes.first().copied())
-        .ok_or_else(|| std::io::Error::other("surface has no supported present modes"))?;
+        .find(|mode| *mode == wgpu::PresentMode::Immediate)
+        .or_else(|| {
+            capabilities
+                .present_modes
+                .iter()
+                .copied()
+                .find(|mode| *mode == wgpu::PresentMode::Mailbox)
+        })
+        .or_else(|| {
+            capabilities
+                .present_modes
+                .iter()
+                .copied()
+                .find(|mode| *mode == wgpu::PresentMode::FifoRelaxed)
+        })
+        .unwrap_or(wgpu::PresentMode::AutoNoVsync);
     let alpha_mode = capabilities
         .alpha_modes
         .iter()
@@ -495,13 +521,15 @@ fn surface_config(
         .or_else(|| capabilities.alpha_modes.first().copied())
         .ok_or_else(|| std::io::Error::other("surface has no supported alpha modes"))?;
 
+    log::info!("using {:?} present mode with frame latency 1", present_mode);
+
     Ok(wgpu::SurfaceConfiguration {
         usage: wgpu::TextureUsages::RENDER_ATTACHMENT,
         format,
         width: size.width,
         height: size.height,
         present_mode,
-        desired_maximum_frame_latency: 2,
+        desired_maximum_frame_latency: 1,
         alpha_mode,
         view_formats: vec![format],
     })
