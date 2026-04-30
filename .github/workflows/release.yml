@@ -73,6 +73,25 @@ jobs:
           git-user: github-actions[bot]
           git-user-email: 41898282+github-actions[bot]@users.noreply.github.com
 
+      - name: Expose Cocogitto executable
+        run: |
+          $candidateDirs = @(
+            (Join-Path $env:USERPROFILE ".local\bin"),
+            (Join-Path $env:HOME ".local\bin")
+          ) | Select-Object -Unique
+
+          $cogPath = $candidateDirs |
+            ForEach-Object { Join-Path $_ "cog.exe" } |
+            Where-Object { Test-Path -LiteralPath $_ } |
+            Select-Object -First 1
+
+          if ([string]::IsNullOrWhiteSpace($cogPath)) {
+            throw "Cocogitto was not found after cocogitto-action installed it."
+          }
+
+          Split-Path -Parent $cogPath | Out-File -FilePath $env:GITHUB_PATH -Encoding utf8 -Append
+          Write-Host "Added Cocogitto to PATH: $cogPath"
+
       - name: Initial commit check
         if: steps.release_range.outputs.root_commit != ''
         run: |
