@@ -75,10 +75,10 @@ jobs:
 
       - name: Expose Cocogitto executable
         run: |
-          $candidateDirs = @(
-            (Join-Path $env:USERPROFILE ".local\bin"),
-            (Join-Path $env:HOME ".local\bin")
-          ) | Select-Object -Unique
+          $candidateDirs = @($env:USERPROFILE, $env:HOME) |
+            Where-Object { -not [string]::IsNullOrWhiteSpace($_) } |
+            Select-Object -Unique |
+            ForEach-Object { Join-Path $_ ".local\bin" }
 
           $cogPath = $candidateDirs |
             ForEach-Object { Join-Path $_ "cog.exe" } |
