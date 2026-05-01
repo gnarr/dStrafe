@@ -185,9 +185,9 @@ mod platform {
         VK_OEM_PLUS, VK_RCONTROL,
     };
     use windows_sys::Win32::UI::WindowsAndMessaging::{
-        CallNextHookEx, GetMessageW, HC_ACTION, KBDLLHOOKSTRUCT, MSG, SetWindowsHookExW,
-        UnhookWindowsHookEx, WH_KEYBOARD_LL, WH_MOUSE_LL, WM_KEYDOWN, WM_KEYUP, WM_LBUTTONDOWN,
-        WM_SYSKEYDOWN, WM_SYSKEYUP,
+        CallNextHookEx, GetMessageW, HC_ACTION, KBDLLHOOKSTRUCT, LLKHF_EXTENDED, MSG,
+        SetWindowsHookExW, UnhookWindowsHookEx, WH_KEYBOARD_LL, WH_MOUSE_LL, WM_KEYDOWN, WM_KEYUP,
+        WM_LBUTTONDOWN, WM_SYSKEYDOWN, WM_SYSKEYUP,
     };
 
     type Callback = Box<dyn FnMut(InputEvent) + Send>;
@@ -328,7 +328,7 @@ mod platform {
         };
 
         let hook = unsafe { *(lparam as *const KBDLLHOOKSTRUCT) };
-        let key = key_from_virtual_key(hook.vkCode)?;
+        let key = key_from_keyboard_hook(&hook)?;
 
         Some(if pressed {
             InputEvent::KeyPress(key)
@@ -352,17 +352,16 @@ mod platform {
         }
     }
 
-    fn key_from_virtual_key(vk_code: u32) -> Option<InputKey> {
-        match vk_code {
+    fn key_from_keyboard_hook(hook: &KBDLLHOOKSTRUCT) -> Option<InputKey> {
+        match hook.vkCode {
             code if code == u32::from(VK_F6) => Some(InputKey::F6),
             code if code == u32::from(VK_F7) => Some(InputKey::F7),
             code if code == u32::from(VK_F8) => Some(InputKey::F8),
             code if code == u32::from(VK_OEM_PLUS) => Some(InputKey::Equal),
             code if code == u32::from(VK_OEM_MINUS) => Some(InputKey::Minus),
-            code if code == u32::from(VK_LCONTROL) || code == u32::from(VK_CONTROL) => {
-                Some(InputKey::ControlLeft)
-            }
+            code if code == u32::from(VK_LCONTROL) => Some(InputKey::ControlLeft),
             code if code == u32::from(VK_RCONTROL) => Some(InputKey::ControlRight),
+            code if code == u32::from(VK_CONTROL) => Some(control_key_from_hook(hook)),
             code @ 0x30..=0x39 => Some(InputKey::Character((code as u8) as char)),
             code @ 0x41..=0x5A => Some(InputKey::Character((code as u8) as char)),
             code if (u32::from(VK_NUMPAD0)..=u32::from(VK_NUMPAD9)).contains(&code) => {
@@ -370,6 +369,58 @@ mod platform {
                 Some(InputKey::Character(digit as char))
             }
             _ => None,
+        }
+    }
+
+    fn control_key_from_hook(hook: &KBDLLHOOKSTRUCT) -> InputKey {
+        if hook.flags & LLKHF_EXTENDED != 0 {
+            InputKey::ControlRight
+        } else {
+            InputKey::ControlLeft
+        }
+    }
+
+    #[cfg(test)]
+    mod tests {
+        use super::*;
+
+        fn keyboard_hook(vk_code: u32, flags: u32) -> KBDLLHOOKSTRUCT {
+            KBDLLHOOKSTRUCT {
+                vkCode: vk_code,
+                scanCode: 0x1d,
+                flags,
+                time: 0,
+                dwExtraInfo: 0,
+            }
+        }
+
+        #[test]
+        fn generic_control_without_extended_flag_maps_to_left_control() {
+            let hook = keyboard_hook(u32::from(VK_CONTROL), 0);
+
+            assert_eq!(key_from_keyboard_hook(&hook), Some(InputKey::ControlLeft));
+        }
+
+        #[test]
+        fn generic_control_with_extended_flag_maps_to_right_control() {
+            let hook = keyboard_hook(u32::from(VK_CONTROL), LLKHF_EXTENDED);
+
+            assert_eq!(key_from_keyboard_hook(&hook), Some(InputKey::ControlRight));
+        }
+
+        #[test]
+        fn side_specific_control_codes_do_not_depend_on_extended_flag() {
+            let left_hook = keyboard_hook(u32::from(VK_LCONTROL), LLKHF_EXTENDED);
+            let right_hook = keyboard_hook(u32::from(VK_RCONTROL), 0);
+
+            assert_eq!(
+                key_from_keyboard_hook(&left_hook),
+                Some(InputKey::ControlLeft)
+            );
+            assert_eq!(
+                key_from_keyboard_hook(&right_hook),
+                Some(InputKey::ControlRight)
+            );
         }
     }
 }
