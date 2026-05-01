@@ -2,6 +2,22 @@
 All notable changes to this project will be documented in this file. See [conventional commits](https://www.conventionalcommits.org/) for commit guidelines.
 
 - - -
+## [0.2.1](https://github.com/gnarr/dStrafe/compare/f30a82ba5a86145fd80f39f3484dffb10c40119f..0.2.1) - 2026-05-01
+#### Bug Fixes
+- (**input**) dispatch Windows hook events through channel - ([6bb2bb2](https://github.com/gnarr/dStrafe/commit/6bb2bb2b1bb460151aa0a7e8e153c451a33eb508)) - Gunnar Cortes Heimisson
+- disambiguate generic Windows control keys - ([639f458](https://github.com/gnarr/dStrafe/commit/639f4580d18fd71ec986bba73eef3f0aadb8af5a)) - Gunnar Cortes Heimisson
+- use monotonic input timestamps - ([02749b6](https://github.com/gnarr/dStrafe/commit/02749b695b236f7957d7e60b280c7cf24636cde0)) - Gunnar Cortes Heimisson
+- pass module handle to Windows hooks - ([c3029d3](https://github.com/gnarr/dStrafe/commit/c3029d33f6cf47df80f62b237a29d8c56054d585)) - Gunnar Cortes Heimisson
+#### Performance
+- eliminate idle CPU burn in overlay - ([f30a82b](https://github.com/gnarr/dStrafe/commit/f30a82ba5a86145fd80f39f3484dffb10c40119f)) - Gunnar Cortes Heimisson
+#### Tests
+- (**input**) cover Windows virtual key translation - ([c94a77a](https://github.com/gnarr/dStrafe/commit/c94a77ac29a4ad7aacada90bf5a35442866f0b0a)) - Gunnar Cortes Heimisson
+#### Refactoring
+- (**app**) rename cached overlay display text field - ([4744af1](https://github.com/gnarr/dStrafe/commit/4744af1f3a2094c21d620aeaec811799f0ee989d)) - Gunnar Cortes Heimisson
+- (**config**) derive AppConfig default - ([bbd12ed](https://github.com/gnarr/dStrafe/commit/bbd12edf0d22604831c5d96620b0ede5018c34b8)) - Gunnar Cortes Heimisson
+
+- - -
+
 ## [0.2.0](https://github.com/gnarr/dStrafe/compare/55f8fd4009df3304a575ba6e0c392ea08417e46e..0.2.0) - 2026-04-30
 #### Features
 - (**config**) hide console unless debug is enabled - ([55f8fd4](https://github.com/gnarr/dStrafe/commit/55f8fd4009df3304a575ba6e0c392ea08417e46e)) - Gunnar Cortes Heimisson
