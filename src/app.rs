@@ -596,7 +596,7 @@ struct OverlayState {
     header_font_size: f32,
     body_font_size: f32,
     last_result: Option<ShotClassification>,
-    display_text: String,
+    cached_display_text: String,
     max_display_line_len: usize,
 }
 
@@ -607,7 +607,7 @@ impl Default for OverlayState {
             header_font_size: 12.0,
             body_font_size: 10.0,
             last_result: None,
-            display_text: WAITING_TEXT.to_owned(),
+            cached_display_text: WAITING_TEXT.to_owned(),
             max_display_line_len: WAITING_TEXT.len(),
         }
     }
@@ -615,9 +615,9 @@ impl Default for OverlayState {
 
 impl OverlayState {
     fn set_result(&mut self, result: ShotClassification) {
-        self.display_text = result.display_text();
+        self.cached_display_text = result.display_text();
         self.max_display_line_len = self
-            .display_text
+            .cached_display_text
             .lines()
             .map(str::len)
             .max()
@@ -675,7 +675,7 @@ impl OverlayState {
                     Layout::centered_and_justified(egui::Direction::TopDown),
                     |ui| {
                         let label = Label::new(
-                            RichText::new(self.display_text.as_str())
+                            RichText::new(self.cached_display_text.as_str())
                                 .font(FontId::monospace(self.body_font_size))
                                 .color(Color32::WHITE),
                         )
@@ -764,7 +764,7 @@ impl OverlayState {
     }
 
     fn display_text(&self) -> &str {
-        &self.display_text
+        &self.cached_display_text
     }
 
     fn background_color(&self) -> Color32 {
