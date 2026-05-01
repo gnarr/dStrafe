@@ -178,6 +178,8 @@ mod platform {
     use std::ptr::{null, null_mut};
     use std::sync::Mutex;
     use std::sync::atomic::{AtomicPtr, Ordering};
+    use std::sync::mpsc::{self, Sender};
+    use std::thread;
     use windows_sys::Win32::Foundation::{GetLastError, LPARAM, LRESULT, WPARAM};
     use windows_sys::Win32::System::LibraryLoader::GetModuleHandleW;
     use windows_sys::Win32::UI::Input::KeyboardAndMouse::{
@@ -190,9 +192,7 @@ mod platform {
         WM_LBUTTONDOWN, WM_SYSKEYDOWN, WM_SYSKEYUP,
     };
 
-    type Callback = Box<dyn FnMut(InputEvent) + Send>;
-
-    static CALLBACK: Mutex<Option<Callback>> = Mutex::new(None);
+    static EVENT_SENDER: Mutex<Option<Sender<InputEvent>>> = Mutex::new(None);
     static KEY_HOOK: AtomicPtr<c_void> = AtomicPtr::new(null_mut());
     static MOUSE_HOOK: AtomicPtr<c_void> = AtomicPtr::new(null_mut());
 
@@ -200,9 +200,18 @@ mod platform {
     where
         T: FnMut(InputEvent) + Send + 'static,
     {
-        set_callback(Box::new(callback))?;
-
         let module_handle = current_module_handle()?;
+
+        let (event_sender, event_receiver) = mpsc::channel();
+        set_event_sender(event_sender)?;
+        let event_worker = match start_event_worker(callback, event_receiver) {
+            Ok(worker) => worker,
+            Err(error) => {
+                clear_event_sender();
+                return Err(error);
+            }
+        };
+
         let key_hook = unsafe {
             SetWindowsHookExW(
                 WH_KEYBOARD_LL,
@@ -213,7 +222,7 @@ mod platform {
         };
         if key_hook.is_null() {
             let error = unsafe { GetLastError() };
-            clear_callback();
+            stop_event_worker(event_worker);
             return Err(format!("keyboard hook failed with Windows error {error}"));
         }
         KEY_HOOK.store(key_hook, Ordering::Relaxed);
@@ -223,14 +232,14 @@ mod platform {
         if mouse_hook.is_null() {
             let error = unsafe { GetLastError() };
             uninstall_hooks();
-            clear_callback();
+            stop_event_worker(event_worker);
             return Err(format!("mouse hook failed with Windows error {error}"));
         }
         MOUSE_HOOK.store(mouse_hook, Ordering::Relaxed);
 
         let result = run_message_loop();
         uninstall_hooks();
-        clear_callback();
+        stop_event_worker(event_worker);
         result
     }
 
@@ -246,18 +255,40 @@ mod platform {
         Ok(module_handle)
     }
 
-    fn set_callback(callback: Callback) -> Result<(), String> {
-        let mut slot = CALLBACK
+    fn start_event_worker<T>(
+        mut callback: T,
+        event_receiver: mpsc::Receiver<InputEvent>,
+    ) -> Result<thread::JoinHandle<()>, String>
+    where
+        T: FnMut(InputEvent) + Send + 'static,
+    {
+        thread::Builder::new()
+            .name("dstrafe-input-events".to_owned())
+            .spawn(move || {
+                for event in event_receiver {
+                    callback(event);
+                }
+            })
+            .map_err(|error| format!("failed to start input event worker: {error}"))
+    }
+
+    fn set_event_sender(sender: Sender<InputEvent>) -> Result<(), String> {
+        let mut slot = EVENT_SENDER
             .lock()
-            .map_err(|_| "input callback lock is poisoned".to_owned())?;
-        *slot = Some(callback);
+            .map_err(|_| "input event sender lock is poisoned".to_owned())?;
+        *slot = Some(sender);
         Ok(())
     }
 
-    fn clear_callback() {
-        if let Ok(mut slot) = CALLBACK.lock() {
+    fn clear_event_sender() {
+        if let Ok(mut slot) = EVENT_SENDER.lock() {
             *slot = None;
         }
+    }
+
+    fn stop_event_worker(worker: thread::JoinHandle<()>) {
+        clear_event_sender();
+        let _ = worker.join();
     }
 
     fn run_message_loop() -> Result<(), String> {
@@ -345,10 +376,13 @@ mod platform {
     }
 
     fn dispatch(event: InputEvent) {
-        if let Ok(mut slot) = CALLBACK.lock()
-            && let Some(callback) = slot.as_mut()
-        {
-            callback(event);
+        let sender = EVENT_SENDER
+            .lock()
+            .ok()
+            .and_then(|slot| slot.as_ref().cloned());
+
+        if let Some(sender) = sender {
+            let _ = sender.send(event);
         }
     }
 
