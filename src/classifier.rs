@@ -1,11 +1,11 @@
-use std::collections::{HashMap, HashSet};
+use std::collections::HashMap;
 use std::fmt;
 
 #[derive(Clone, Debug)]
 struct AxisState {
     keys: [char; 2],
-    held_keys: HashSet<char>,
-    press_times: HashMap<char, f64>,
+    held_keys: [bool; 2],
+    press_times: [Option<f64>; 2],
     cs_candidate: Option<CounterStrafeCandidate>,
     cs_release_key: Option<char>,
     cs_release_time: Option<f64>,
@@ -27,8 +27,8 @@ impl AxisState {
     fn new(keys: [char; 2]) -> Self {
         Self {
             keys,
-            held_keys: HashSet::new(),
-            press_times: HashMap::new(),
+            held_keys: [false; 2],
+            press_times: [None; 2],
             cs_candidate: None,
             cs_release_key: None,
             cs_release_time: None,
@@ -40,20 +40,20 @@ impl AxisState {
     }
 
     fn on_press(&mut self, key: char, timestamp_ms: f64) {
-        if self.held_keys.contains(&key) {
+        let Some(key_index) = self.key_index(key) else {
+            return;
+        };
+
+        if self.held_keys[key_index] {
             return;
         }
 
-        let other = if key == self.keys[1] {
-            self.keys[0]
-        } else {
-            self.keys[1]
-        };
+        let other_index = 1 - key_index;
+        let other = self.keys[other_index];
+        self.held_keys[key_index] = true;
+        self.press_times[key_index] = Some(timestamp_ms);
 
-        self.held_keys.insert(key);
-        self.press_times.insert(key, timestamp_ms);
-
-        if self.held_keys.contains(&other) {
+        if self.held_keys[other_index] {
             self.overlap_start_time = Some(timestamp_ms);
         }
 
@@ -77,18 +77,23 @@ impl AxisState {
     }
 
     fn on_release(&mut self, key: char, timestamp_ms: f64) {
-        if !self.held_keys.contains(&key) {
+        let Some(key_index) = self.key_index(key) else {
+            return;
+        };
+
+        if !self.held_keys[key_index] {
             return;
         }
 
-        if let Some(press_time) = self.press_times.get(&key) {
+        if let Some(press_time) = self.press_times[key_index] {
             let duration = timestamp_ms - press_time;
             if duration < 80.0 {
                 self.micro_candidate_duration = Some(duration);
             }
         }
 
-        self.held_keys.remove(&key);
+        self.held_keys[key_index] = false;
+        self.press_times[key_index] = None;
         self.overlap_start_time = None;
         self.cs_release_key = Some(key);
         self.cs_release_time = Some(timestamp_ms);
@@ -140,7 +145,7 @@ impl AxisState {
     }
 
     fn reset(&mut self) {
-        let overlap_start_time = if self.keys.iter().all(|key| self.held_keys.contains(key)) {
+        let overlap_start_time = if self.held_keys.iter().all(|held| *held) {
             self.overlap_start_time
         } else {
             None
@@ -153,6 +158,10 @@ impl AxisState {
         self.cs_press_time = None;
         self.overlap_start_time = overlap_start_time;
         self.micro_candidate_duration = None;
+    }
+
+    fn key_index(&self, key: char) -> Option<usize> {
+        self.keys.iter().position(|candidate| *candidate == key)
     }
 }
 

@@ -9,7 +9,7 @@ use wgpu::CurrentSurfaceTexture;
 use winit::application::ApplicationHandler;
 use winit::dpi::{LogicalSize, PhysicalSize};
 use winit::event::WindowEvent;
-use winit::event_loop::{ActiveEventLoop, EventLoop};
+use winit::event_loop::{ActiveEventLoop, ControlFlow, EventLoop};
 use winit::monitor::MonitorHandle;
 use winit::window::{Fullscreen, Window, WindowAttributes, WindowId, WindowLevel};
 
@@ -17,6 +17,7 @@ const INITIAL_WIDTH: f64 = 260.0;
 const INITIAL_HEIGHT: f64 = 96.0;
 const MIN_BODY_FONT_SIZE: f32 = 8.0;
 const MAX_BODY_FONT_SIZE: f32 = 24.0;
+const WAITING_TEXT: &str = "Waiting for input...";
 
 #[derive(Clone, Debug, PartialEq)]
 pub enum UiCommand {
@@ -31,6 +32,7 @@ pub enum UiCommand {
 pub fn run(config: AppConfig) -> Result<(), Box<dyn Error>> {
     let mut event_loop_builder = EventLoop::<UiCommand>::with_user_event();
     let event_loop = event_loop_builder.build()?;
+    event_loop.set_control_flow(ControlFlow::Wait);
     input::start_input_listener(event_loop.create_proxy(), config.movement);
 
     let mut app = OverlayApplication::default();
@@ -75,7 +77,9 @@ impl ApplicationHandler<UiCommand> for OverlayApplication {
             return;
         }
 
-        if let Some(egui_state) = self.egui_state.as_mut() {
+        if !matches!(event, WindowEvent::RedrawRequested)
+            && let Some(egui_state) = self.egui_state.as_mut()
+        {
             let response = egui_state.on_window_event(window, &event);
             if response.repaint {
                 window.request_redraw();
@@ -109,7 +113,7 @@ impl ApplicationHandler<UiCommand> for OverlayApplication {
     fn user_event(&mut self, event_loop: &ActiveEventLoop, event: UiCommand) {
         let should_resize = match event {
             UiCommand::Shot(result) => {
-                self.overlay.last_result = Some(result);
+                self.overlay.set_result(result);
                 false
             }
             UiCommand::ToggleVisible => {
@@ -278,13 +282,28 @@ impl GraphicsState {
             wgpu::Backends::from_env().unwrap_or_else(preferred_backends);
         let instance = wgpu::Instance::new(instance_descriptor);
         let surface = instance.create_surface(window)?;
-        let adapter = instance
+        let adapter = match instance
             .request_adapter(&wgpu::RequestAdapterOptions {
-                power_preference: wgpu::PowerPreference::HighPerformance,
+                power_preference: wgpu::PowerPreference::LowPower,
                 force_fallback_adapter: false,
                 compatible_surface: Some(&surface),
             })
-            .await?;
+            .await
+        {
+            Ok(adapter) => adapter,
+            Err(error) => {
+                log::warn!(
+                    "low-power adapter unavailable ({error}); falling back to high-performance adapter"
+                );
+                instance
+                    .request_adapter(&wgpu::RequestAdapterOptions {
+                        power_preference: wgpu::PowerPreference::HighPerformance,
+                        force_fallback_adapter: false,
+                        compatible_surface: Some(&surface),
+                    })
+                    .await?
+            }
+        };
         let adapter_info = adapter.get_info();
         log::info!(
             "using {:?} backend adapter: {}",
@@ -493,26 +512,7 @@ fn surface_config(
         })
         .or_else(|| capabilities.formats.first().copied())
         .ok_or_else(|| std::io::Error::other("surface has no supported formats"))?;
-    let present_mode = capabilities
-        .present_modes
-        .iter()
-        .copied()
-        .find(|mode| *mode == wgpu::PresentMode::Immediate)
-        .or_else(|| {
-            capabilities
-                .present_modes
-                .iter()
-                .copied()
-                .find(|mode| *mode == wgpu::PresentMode::Mailbox)
-        })
-        .or_else(|| {
-            capabilities
-                .present_modes
-                .iter()
-                .copied()
-                .find(|mode| *mode == wgpu::PresentMode::FifoRelaxed)
-        })
-        .unwrap_or(wgpu::PresentMode::AutoNoVsync);
+    let present_mode = wgpu::PresentMode::AutoVsync;
     let alpha_mode = capabilities
         .alpha_modes
         .iter()
@@ -521,7 +521,7 @@ fn surface_config(
         .or_else(|| capabilities.alpha_modes.first().copied())
         .ok_or_else(|| std::io::Error::other("surface has no supported alpha modes"))?;
 
-    log::info!("using {:?} present mode with frame latency 1", present_mode);
+    log::info!("using {:?} present mode with frame latency 2", present_mode);
 
     Ok(wgpu::SurfaceConfiguration {
         usage: wgpu::TextureUsages::RENDER_ATTACHMENT,
@@ -529,7 +529,7 @@ fn surface_config(
         width: size.width,
         height: size.height,
         present_mode,
-        desired_maximum_frame_latency: 1,
+        desired_maximum_frame_latency: 2,
         alpha_mode,
         view_formats: vec![format],
     })
@@ -596,6 +596,8 @@ struct OverlayState {
     header_font_size: f32,
     body_font_size: f32,
     last_result: Option<ShotClassification>,
+    display_text: String,
+    max_display_line_len: usize,
 }
 
 impl Default for OverlayState {
@@ -605,11 +607,24 @@ impl Default for OverlayState {
             header_font_size: 12.0,
             body_font_size: 10.0,
             last_result: None,
+            display_text: WAITING_TEXT.to_owned(),
+            max_display_line_len: WAITING_TEXT.len(),
         }
     }
 }
 
 impl OverlayState {
+    fn set_result(&mut self, result: ShotClassification) {
+        self.display_text = result.display_text();
+        self.max_display_line_len = self
+            .display_text
+            .lines()
+            .map(str::len)
+            .max()
+            .unwrap_or(WAITING_TEXT.len());
+        self.last_result = Some(result);
+    }
+
     fn ui(&mut self, ui: &mut egui::Ui, window: &Window, is_fullscreen: bool) {
         if self.header_font_size == 0.0 {
             self.header_font_size = 12.0;
@@ -659,12 +674,8 @@ impl OverlayState {
                 ui.with_layout(
                     Layout::centered_and_justified(egui::Direction::TopDown),
                     |ui| {
-                        let text = self.last_result.as_ref().map_or_else(
-                            || "Waiting for input...".to_owned(),
-                            |result| result.display_text(),
-                        );
                         let label = Label::new(
-                            RichText::new(text)
+                            RichText::new(self.display_text.as_str())
                                 .font(FontId::monospace(self.body_font_size))
                                 .color(Color32::WHITE),
                         )
@@ -700,7 +711,7 @@ impl OverlayState {
                 );
 
                 let text = self.display_text();
-                let font_size = fullscreen_font_size(&text, ui.available_size());
+                let font_size = fullscreen_font_size(text, ui.available_size());
                 ui.allocate_ui_with_layout(
                     ui.available_size(),
                     Layout::centered_and_justified(egui::Direction::TopDown),
@@ -745,29 +756,15 @@ impl OverlayState {
         } else {
             self.header_font_size
         };
-        let max_line_len = self
-            .last_result
-            .as_ref()
-            .map(|result| {
-                result
-                    .display_text()
-                    .lines()
-                    .map(str::len)
-                    .max()
-                    .unwrap_or("Waiting for input...".len())
-            })
-            .unwrap_or("Waiting for input...".len());
+        let max_line_len = self.max_display_line_len;
         let width = (max_line_len as f64 * body as f64 * 0.68 + 52.0).max(INITIAL_WIDTH);
         let height = (header as f64 + body as f64 * 4.0 + 38.0).max(INITIAL_HEIGHT);
 
         (width, height)
     }
 
-    fn display_text(&self) -> String {
-        self.last_result.as_ref().map_or_else(
-            || "Waiting for input...".to_owned(),
-            |result| result.display_text(),
-        )
+    fn display_text(&self) -> &str {
+        &self.display_text
     }
 
     fn background_color(&self) -> Color32 {
