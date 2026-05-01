@@ -57,7 +57,7 @@ impl MovementKeys {
     }
 }
 
-#[derive(Clone, Debug, Eq, PartialEq)]
+#[derive(Clone, Debug, Default, Eq, PartialEq)]
 pub struct AppConfig {
     pub debug: bool,
     pub movement: MovementKeys,
@@ -102,15 +102,6 @@ impl AppConfig {
                 config: Self::default(),
                 warning: Some(format!("Ignoring {path:?}: {error}")),
             },
-        }
-    }
-}
-
-impl Default for AppConfig {
-    fn default() -> Self {
-        Self {
-            debug: false,
-            movement: MovementKeys::default(),
         }
     }
 }
