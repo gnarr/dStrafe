@@ -387,7 +387,15 @@ mod platform {
     }
 
     fn key_from_keyboard_hook(hook: &KBDLLHOOKSTRUCT) -> Option<InputKey> {
-        match hook.vkCode {
+        if hook.vkCode == u32::from(VK_CONTROL) {
+            Some(control_key_from_hook(hook))
+        } else {
+            key_from_virtual_key(hook.vkCode)
+        }
+    }
+
+    fn key_from_virtual_key(vk_code: u32) -> Option<InputKey> {
+        match vk_code {
             code if code == u32::from(VK_F6) => Some(InputKey::F6),
             code if code == u32::from(VK_F7) => Some(InputKey::F7),
             code if code == u32::from(VK_F8) => Some(InputKey::F8),
@@ -395,7 +403,6 @@ mod platform {
             code if code == u32::from(VK_OEM_MINUS) => Some(InputKey::Minus),
             code if code == u32::from(VK_LCONTROL) => Some(InputKey::ControlLeft),
             code if code == u32::from(VK_RCONTROL) => Some(InputKey::ControlRight),
-            code if code == u32::from(VK_CONTROL) => Some(control_key_from_hook(hook)),
             code @ 0x30..=0x39 => Some(InputKey::Character((code as u8) as char)),
             code @ 0x41..=0x5A => Some(InputKey::Character((code as u8) as char)),
             code if (u32::from(VK_NUMPAD0)..=u32::from(VK_NUMPAD9)).contains(&code) => {
@@ -455,6 +462,60 @@ mod platform {
                 key_from_keyboard_hook(&right_hook),
                 Some(InputKey::ControlRight)
             );
+        }
+
+        #[test]
+        fn shortcut_virtual_keys_map_to_input_keys() {
+            let cases = [
+                (u32::from(VK_F6), InputKey::F6),
+                (u32::from(VK_F7), InputKey::F7),
+                (u32::from(VK_F8), InputKey::F8),
+                (u32::from(VK_OEM_PLUS), InputKey::Equal),
+                (u32::from(VK_OEM_MINUS), InputKey::Minus),
+            ];
+
+            for (vk_code, expected) in cases {
+                assert_eq!(key_from_virtual_key(vk_code), Some(expected));
+            }
+        }
+
+        #[test]
+        fn top_row_digits_map_to_character_digits() {
+            for digit in 0..=9 {
+                let vk_code = 0x30 + digit;
+                let expected = InputKey::Character((b'0' + digit as u8) as char);
+
+                assert_eq!(key_from_virtual_key(vk_code), Some(expected));
+            }
+        }
+
+        #[test]
+        fn numpad_digits_map_to_character_digits() {
+            for digit in 0..=9 {
+                let vk_code = u32::from(VK_NUMPAD0) + digit;
+                let expected = InputKey::Character((b'0' + digit as u8) as char);
+
+                assert_eq!(key_from_virtual_key(vk_code), Some(expected));
+            }
+        }
+
+        #[test]
+        fn movement_letters_map_to_uppercase_characters() {
+            for letter in b'A'..=b'Z' {
+                let expected = InputKey::Character(letter as char);
+
+                assert_eq!(key_from_virtual_key(u32::from(letter)), Some(expected));
+            }
+        }
+
+        #[test]
+        fn generic_control_virtual_key_is_not_mapped_without_hook_flags() {
+            assert_eq!(key_from_virtual_key(u32::from(VK_CONTROL)), None);
+        }
+
+        #[test]
+        fn unrelated_virtual_keys_are_ignored() {
+            assert_eq!(key_from_virtual_key(0x1B), None);
         }
     }
 }
