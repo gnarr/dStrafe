@@ -2,18 +2,19 @@ use crate::app::UiCommand;
 use crate::classifier::MovementClassifier;
 use crate::config::MovementKeys;
 use std::thread;
-use std::time::{SystemTime, UNIX_EPOCH};
+use std::time::Instant;
 use winit::event_loop::EventLoopProxy;
 
 pub fn start_input_listener(proxy: EventLoopProxy<UiCommand>, movement_keys: MovementKeys) {
     match thread::Builder::new()
         .name("dstrafe-input".to_owned())
         .spawn(move || {
+            let clock = InputClock::start();
             let mut listener = InputListener::new(proxy, movement_keys);
 
-            if let Err(error) = platform::listen(move |event, timestamp_ms| {
-                listener.handle_event(event, timestamp_ms)
-            }) {
+            if let Err(error) =
+                platform::listen(move |event| listener.handle_event(event, clock.timestamp_ms()))
+            {
                 log::error!("global input listener stopped: {error}");
             }
         }) {
@@ -80,6 +81,23 @@ impl InputListener {
         if self.proxy.send_event(command).is_err() {
             log::debug!("event loop is no longer accepting input events");
         }
+    }
+}
+
+#[derive(Clone, Copy, Debug)]
+struct InputClock {
+    start: Instant,
+}
+
+impl InputClock {
+    fn start() -> Self {
+        Self {
+            start: Instant::now(),
+        }
+    }
+
+    fn timestamp_ms(self) -> f64 {
+        self.start.elapsed().as_secs_f64() * 1000.0
     }
 }
 
@@ -153,19 +171,9 @@ impl ShortcutState {
     }
 }
 
-fn current_timestamp_ms() -> f64 {
-    timestamp_ms(SystemTime::now())
-}
-
-fn timestamp_ms(time: SystemTime) -> f64 {
-    time.duration_since(UNIX_EPOCH)
-        .map(|duration| duration.as_secs_f64() * 1000.0)
-        .unwrap_or_default()
-}
-
 #[cfg(target_os = "windows")]
 mod platform {
-    use super::{InputEvent, InputKey, current_timestamp_ms};
+    use super::{InputEvent, InputKey};
     use std::ffi::c_void;
     use std::ptr::{null, null_mut};
     use std::sync::Mutex;
@@ -182,7 +190,7 @@ mod platform {
         WM_SYSKEYDOWN, WM_SYSKEYUP,
     };
 
-    type Callback = Box<dyn FnMut(InputEvent, f64) + Send>;
+    type Callback = Box<dyn FnMut(InputEvent) + Send>;
 
     static CALLBACK: Mutex<Option<Callback>> = Mutex::new(None);
     static KEY_HOOK: AtomicPtr<c_void> = AtomicPtr::new(null_mut());
@@ -190,7 +198,7 @@ mod platform {
 
     pub fn listen<T>(callback: T) -> Result<(), String>
     where
-        T: FnMut(InputEvent, f64) + Send + 'static,
+        T: FnMut(InputEvent) + Send + 'static,
     {
         set_callback(Box::new(callback))?;
 
@@ -340,7 +348,7 @@ mod platform {
         if let Ok(mut slot) = CALLBACK.lock()
             && let Some(callback) = slot.as_mut()
         {
-            callback(event, current_timestamp_ms());
+            callback(event);
         }
     }
 
@@ -368,16 +376,16 @@ mod platform {
 
 #[cfg(not(target_os = "windows"))]
 mod platform {
-    use super::{InputEvent, InputKey, timestamp_ms};
+    use super::{InputEvent, InputKey};
     use rdev::{Button, Event, EventType, Key, listen as rdev_listen};
 
     pub fn listen<T>(mut callback: T) -> Result<(), String>
     where
-        T: FnMut(InputEvent, f64) + Send + 'static,
+        T: FnMut(InputEvent) + Send + 'static,
     {
         rdev_listen(move |event| {
             if let Some(input_event) = map_event(&event) {
-                callback(input_event, timestamp_ms(event.time));
+                callback(input_event);
             }
         })
         .map_err(|error| format!("{error:?}"))
