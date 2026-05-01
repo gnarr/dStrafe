@@ -2,6 +2,18 @@
 All notable changes to this project will be documented in this file. See [conventional commits](https://www.conventionalcommits.org/) for commit guidelines.
 
 - - -
+## [0.2.0](https://github.com/gnarr/dStrafe/compare/55f8fd4009df3304a575ba6e0c392ea08417e46e..0.2.0) - 2026-04-30
+#### Features
+- (**config**) hide console unless debug is enabled - ([55f8fd4](https://github.com/gnarr/dStrafe/commit/55f8fd4009df3304a575ba6e0c392ea08417e46e)) - Gunnar Cortes Heimisson
+#### Documentation
+- update README - ([ae211f7](https://github.com/gnarr/dStrafe/commit/ae211f7ba823411716a61acf2571027a75b4a31f)) - Gunnar Cortes
+#### Tests
+- (**config**) cover invalid TOML diagnostics fallback - ([bfac28d](https://github.com/gnarr/dStrafe/commit/bfac28d132c0d3c106889a659da9c75ba6da00ad)) - Gunnar Cortes Heimisson
+#### Build system
+- (**deps**) make windows-sys target-specific - ([19b19ec](https://github.com/gnarr/dStrafe/commit/19b19ece0de5821dd321f280f0f4bd143c99a8a5)) - Gunnar Cortes Heimisson
+
+- - -
+
 ## [0.1.0](https://github.com/gnarr/dStrafe/compare/5b6e49201f335f89b5fbb841b581394685a76949..0.1.0) - 2026-04-30
 #### Features
 - (**overlay**) add second-display fullscreen mode - ([53aaa12](https://github.com/gnarr/dStrafe/commit/53aaa122efef78945275fc1aa0f287a4747a5d5f)) - Gunnar Cortes Heimisson
