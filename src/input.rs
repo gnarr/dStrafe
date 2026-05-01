@@ -167,10 +167,11 @@ fn timestamp_ms(time: SystemTime) -> f64 {
 mod platform {
     use super::{InputEvent, InputKey, current_timestamp_ms};
     use std::ffi::c_void;
-    use std::ptr::null_mut;
+    use std::ptr::{null, null_mut};
     use std::sync::Mutex;
     use std::sync::atomic::{AtomicPtr, Ordering};
     use windows_sys::Win32::Foundation::{GetLastError, LPARAM, LRESULT, WPARAM};
+    use windows_sys::Win32::System::LibraryLoader::GetModuleHandleW;
     use windows_sys::Win32::UI::Input::KeyboardAndMouse::{
         VK_CONTROL, VK_F6, VK_F7, VK_F8, VK_LCONTROL, VK_NUMPAD0, VK_NUMPAD9, VK_OEM_MINUS,
         VK_OEM_PLUS, VK_RCONTROL,
@@ -193,8 +194,14 @@ mod platform {
     {
         set_callback(Box::new(callback))?;
 
+        let module_handle = current_module_handle()?;
         let key_hook = unsafe {
-            SetWindowsHookExW(WH_KEYBOARD_LL, Some(raw_keyboard_callback), null_mut(), 0)
+            SetWindowsHookExW(
+                WH_KEYBOARD_LL,
+                Some(raw_keyboard_callback),
+                module_handle,
+                0,
+            )
         };
         if key_hook.is_null() {
             let error = unsafe { GetLastError() };
@@ -204,7 +211,7 @@ mod platform {
         KEY_HOOK.store(key_hook, Ordering::Relaxed);
 
         let mouse_hook =
-            unsafe { SetWindowsHookExW(WH_MOUSE_LL, Some(raw_mouse_callback), null_mut(), 0) };
+            unsafe { SetWindowsHookExW(WH_MOUSE_LL, Some(raw_mouse_callback), module_handle, 0) };
         if mouse_hook.is_null() {
             let error = unsafe { GetLastError() };
             uninstall_hooks();
@@ -217,6 +224,18 @@ mod platform {
         uninstall_hooks();
         clear_callback();
         result
+    }
+
+    fn current_module_handle() -> Result<*mut c_void, String> {
+        let module_handle = unsafe { GetModuleHandleW(null()) };
+        if module_handle.is_null() {
+            let error = unsafe { GetLastError() };
+            return Err(format!(
+                "failed to get current module handle with Windows error {error}"
+            ));
+        }
+
+        Ok(module_handle)
     }
 
     fn set_callback(callback: Callback) -> Result<(), String> {
